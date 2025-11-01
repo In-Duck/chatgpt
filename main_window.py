@@ -1,7 +1,9 @@
+import time
+
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QPushButton, QTextEdit, QMessageBox, QGridLayout)
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QIcon, QFont
+                             QLabel, QPushButton, QMessageBox)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
 from settings_dialog import SettingsDialog
 from window_monitor import WindowMonitor
 from key_input_worker import KeyInputWorker
@@ -41,9 +43,16 @@ class MainWindow(QMainWindow):
         self.is_buff1_active = False
         self.is_buff2_active = False
         self.is_buff3_active = False
-        
+
         # 핫키 안내 라벨 (나중에 업데이트용)
         self.hotkey_info_label = None
+        self.buff_info_labels = {}
+        self.buff_intervals = {
+            1: (0.0, 0.0),
+            2: (0.0, 0.0),
+            3: (0.0, 0.0),
+        }
+        self.buff_last_run = {1: None, 2: None, 3: None}
         
         self.init_ui()
         self.connect_signals()
@@ -221,9 +230,96 @@ class MainWindow(QMainWindow):
         """)
         self.buff3_btn.clicked.connect(self.toggle_buff3)
         second_row.addWidget(self.buff3_btn)
-        
+
         button_layout.addLayout(second_row)
-        
+
+        buff_info_widget = QWidget()
+        buff_info_widget.setStyleSheet("""
+            QWidget#BuffInfoPanel {
+                background-color: #fafafa;
+                border: 1px solid #e0e0e0;
+                border-radius: 6px;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="header"] {
+                color: #666;
+                font-size: 8pt;
+                font-weight: bold;
+                padding-bottom: 2px;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="icon"] {
+                font-size: 10pt;
+                font-weight: bold;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="name"] {
+                font-size: 9pt;
+                font-weight: bold;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="detail"] {
+                font-size: 8.5pt;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="icon"][state="active"],
+            QWidget#BuffInfoPanel QLabel[labelRole="name"][state="active"] {
+                color: #2e7d32;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="icon"][state="inactive"] {
+                color: #bbbbbb;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="name"][state="inactive"] {
+                color: #444444;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="detail"][state="active"] {
+                color: #2e7d32;
+            }
+            QWidget#BuffInfoPanel QLabel[labelRole="detail"][state="inactive"] {
+                color: #555555;
+            }
+        """)
+        buff_info_widget.setObjectName("BuffInfoPanel")
+
+        buff_box = QVBoxLayout()
+        buff_box.setContentsMargins(12, 10, 12, 10)
+        buff_box.setSpacing(6)
+
+        header_label = QLabel("버프 상태")
+        header_label.setProperty("labelRole", "header")
+        header_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        buff_box.addWidget(header_label)
+
+        for idx in range(1, 4):
+            row_widget = QWidget()
+            row_layout = QHBoxLayout()
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+
+            icon_label = QLabel("○")
+            icon_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            icon_label.setProperty("labelRole", "icon")
+
+            name_label = QLabel(f"버프{idx}")
+            name_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            name_label.setProperty("labelRole", "name")
+
+            detail_label = QLabel()
+            detail_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            detail_label.setProperty("labelRole", "detail")
+
+            row_layout.addWidget(icon_label)
+            row_layout.addWidget(name_label, 1)
+            row_layout.addWidget(detail_label, 2)
+
+            row_widget.setLayout(row_layout)
+
+            self.buff_info_labels[idx] = {
+                "icon": icon_label,
+                "name": name_label,
+                "detail": detail_label,
+            }
+
+            buff_box.addWidget(row_widget)
+
+        buff_info_widget.setLayout(buff_box)
+        button_layout.addWidget(buff_info_widget)
+
         # 유저탐색 버튼
         self.detect_btn = QPushButton("유저탐색")
         self.detect_btn.setMinimumHeight(36)
@@ -303,12 +399,15 @@ class MainWindow(QMainWindow):
         layout.addLayout(button_layout)
         
         central_widget.setLayout(layout)
-        
+
         self.update_status()
-    
+        self.update_buff_info_labels()
+
     def connect_signals(self):
         """시그널 연결"""
-        pass
+        self.buff1_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(1, ts))
+        self.buff2_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(2, ts))
+        self.buff3_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(3, ts))
     
     def setup_hotkeys(self):
         """핫키 설정"""
@@ -336,6 +435,55 @@ class MainWindow(QMainWindow):
         """핫키 안내 텍스트 업데이트"""
         hotkey_text = "핫키: " + self.hotkey_manager.get_hotkey_display()
         self.hotkey_info_label.setText(hotkey_text)
+
+    def on_buff_last_run_updated(self, buff_number: int, timestamp: float):
+        """버프 워커에서 마지막 실행 시간이 갱신될 때 호출"""
+        self.buff_last_run[buff_number] = timestamp
+        self.update_buff_info_labels()
+
+    def update_buff_info_labels(self):
+        """버프 간격 및 마지막 실행 정보를 UI에 표시"""
+        active_map = {
+            1: self.is_buff1_active,
+            2: self.is_buff2_active,
+            3: self.is_buff3_active,
+        }
+
+        for idx in range(1, 4):
+            row = self.buff_info_labels.get(idx)
+            if not row:
+                continue
+
+            min_interval, max_interval = self.buff_intervals.get(idx, (0.0, 0.0))
+            if min_interval == 0.0 and max_interval == 0.0:
+                interval_text = "간격 없음"
+            elif abs(min_interval - max_interval) < 0.001:
+                interval_text = f"간격 {min_interval:.1f}초"
+            else:
+                interval_text = f"간격 {min_interval:.1f}~{max_interval:.1f}초"
+
+            last_run = self.buff_last_run.get(idx)
+            if last_run:
+                last_text = time.strftime("마지막 %H:%M:%S", time.localtime(last_run))
+            else:
+                last_text = "마지막 --"
+
+            is_active = active_map[idx]
+            icon_text = "●" if is_active else "○"
+
+            detail_suffix = "실행 중" if is_active else "대기 중"
+            detail_text = f"{interval_text} · {last_text} · {detail_suffix}"
+
+            row["icon"].setText(icon_text)
+            row["detail"].setText(detail_text)
+
+            state_value = "active" if is_active else "inactive"
+            for key in ("icon", "name", "detail"):
+                label = row[key]
+                label.setProperty("state", state_value)
+                label.style().unpolish(label)
+                label.style().polish(label)
+                label.update()
     
     def setup_system_tray(self):
         """시스템 트레이 설정"""
@@ -407,20 +555,34 @@ class MainWindow(QMainWindow):
             self.config.get("buff1_max_interval", 10.0),
             self.config.get("buff1_press_count", 1)
         )
-        
+        self.buff_intervals[1] = (
+            self.config.get("buff1_min_interval", 5.0),
+            self.config.get("buff1_max_interval", 10.0),
+        )
+
         self.buff2_worker.set_config(
             self.config.get("buff2_key", "2"),
             self.config.get("buff2_min_interval", 5.0),
             self.config.get("buff2_max_interval", 10.0),
             self.config.get("buff2_press_count", 1)
         )
-        
+        self.buff_intervals[2] = (
+            self.config.get("buff2_min_interval", 5.0),
+            self.config.get("buff2_max_interval", 10.0),
+        )
+
         self.buff3_worker.set_config(
             self.config.get("buff3_key", "3"),
             self.config.get("buff3_min_interval", 5.0),
             self.config.get("buff3_max_interval", 10.0),
             self.config.get("buff3_press_count", 1)
         )
+        self.buff_intervals[3] = (
+            self.config.get("buff3_min_interval", 5.0),
+            self.config.get("buff3_max_interval", 10.0),
+        )
+
+        self.update_buff_info_labels()
         
         # 유저 탐지 설정
         if self.config.get("detection_region"):
@@ -511,7 +673,9 @@ class MainWindow(QMainWindow):
     
     def toggle_buff1(self):
         """버프1 토글"""
-        if self.is_buff1_active:
+        was_active = self.is_buff1_active
+
+        if was_active:
             self.buff1_worker.stop()
             self.is_buff1_active = False
             self.buff1_btn.setText("버프1")
@@ -543,12 +707,17 @@ class MainWindow(QMainWindow):
                     background-color: #da190b;
                 }
             """)
-        
+
+        if not was_active:
+            self.buff_last_run[1] = None
+
         self.update_status()
     
     def toggle_buff2(self):
         """버프2 토글"""
-        if self.is_buff2_active:
+        was_active = self.is_buff2_active
+
+        if was_active:
             self.buff2_worker.stop()
             self.is_buff2_active = False
             self.buff2_btn.setText("버프2")
@@ -580,12 +749,17 @@ class MainWindow(QMainWindow):
                     background-color: #da190b;
                 }
             """)
-        
+
+        if not was_active:
+            self.buff_last_run[2] = None
+
         self.update_status()
     
     def toggle_buff3(self):
         """버프3 토글"""
-        if self.is_buff3_active:
+        was_active = self.is_buff3_active
+
+        if was_active:
             self.buff3_worker.stop()
             self.is_buff3_active = False
             self.buff3_btn.setText("버프3")
@@ -617,7 +791,10 @@ class MainWindow(QMainWindow):
                     background-color: #da190b;
                 }
             """)
-        
+
+        if not was_active:
+            self.buff_last_run[3] = None
+
         self.update_status()
     
     def toggle_detection(self):
@@ -768,13 +945,14 @@ class MainWindow(QMainWindow):
             self.tray_manager.update_tooltip("실행중: " + ", ".join(running_items))
         else:
             self.tray_manager.update_tooltip("대기중")
+        self.update_buff_info_labels()
     
     def changeEvent(self, event):
         """창 상태 변경 이벤트"""
         if event.type() == event.WindowStateChange:
             if self.isMinimized():
-                # 최소화 시 트레이로 숨기기
-                QTimer.singleShot(0, self.hide_to_tray)
+                # 최소화 시 기본 동작을 유지하여 작업 표시줄에 남도록 처리
+                self.showMinimized()
         super().changeEvent(event)
     
     def closeEvent(self, event):
