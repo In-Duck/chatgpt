@@ -1,0 +1,9 @@
+PyQt5
+pynput
+keyboard
+Pillow
+python-telegram-bot
+pywin32
+packaging
+requests
+numpy
