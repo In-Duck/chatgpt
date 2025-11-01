@@ -7,8 +7,6 @@ from window_monitor import WindowMonitor
 from region_preview import RegionPreviewWindow
 from hotkey_input_widget import HotkeyInputWidget
 from typing import Optional, Tuple
-import subprocess
-import sys
 
 
 class SettingsDialog(QDialog):
@@ -408,66 +406,6 @@ class SettingsDialog(QDialog):
         hotkey_tab.setLayout(hotkey_layout)
         tabs.addTab(hotkey_tab, "핫키 설정")
         
-        # 탭 5: 업데이트
-        update_tab = QWidget()
-        update_layout = QVBoxLayout()
-        update_layout.setSpacing(15)
-        update_layout.setContentsMargins(20, 20, 20, 20)
-        
-        # 현재 버전 정보
-        version_group = QGroupBox("버전 정보")
-        version_group_layout = QVBoxLayout()
-        version_group_layout.setSpacing(8)
-        
-        self.current_version_label = QLabel("현재 버전: 1.0.0")
-        self.current_version_label.setStyleSheet("font-size: 11pt;")
-        version_group_layout.addWidget(self.current_version_label)
-        
-        self.latest_version_label = QLabel("최신 버전: 확인 중...")
-        self.latest_version_label.setStyleSheet("font-size: 11pt; color: #666;")
-        version_group_layout.addWidget(self.latest_version_label)
-        
-        version_group.setLayout(version_group_layout)
-        update_layout.addWidget(version_group)
-        
-        # 업데이트 버튼
-        self.check_update_btn = QPushButton("업데이트 확인")
-        self.check_update_btn.setMinimumHeight(40)
-        self.check_update_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                font-size: 12pt;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
-        self.check_update_btn.clicked.connect(self.check_for_updates)
-        update_layout.addWidget(self.check_update_btn)
-        
-        # 업데이트 정보
-        update_info = QLabel(
-            "• GitHub에서 최신 버전을 확인합니다\n"
-            "• 업데이트 시 자동으로 다운로드 및 설치됩니다\n"
-            "• 업데이트 후 프로그램이 자동으로 재시작됩니다"
-        )
-        update_info.setStyleSheet("color: #666; font-size: 9pt;")
-        update_info.setWordWrap(True)
-        update_layout.addWidget(update_info)
-        
-        update_layout.addStretch()
-        
-        update_tab.setLayout(update_layout)
-        tabs.addTab(update_tab, "업데이트")
-        
         layout.addWidget(tabs)
         
         # 버튼
@@ -484,75 +422,6 @@ class SettingsDialog(QDialog):
         layout.addLayout(button_layout)
         
         self.setLayout(layout)
-        
-        # 초기 버전 정보 로드
-        self.load_version_info()
-    
-    def load_version_info(self):
-        """버전 정보 로드"""
-        try:
-            from update_checker import UpdateChecker
-            checker = UpdateChecker("In-Duck/MapleLand")
-            current_version = checker.get_current_version()
-            self.current_version_label.setText(f"현재 버전: {current_version}")
-        except Exception as e:
-            print(f"버전 정보 로드 실패: {e}")
-    
-    def check_for_updates(self):
-        """업데이트 확인"""
-        self.check_update_btn.setEnabled(False)
-        self.check_update_btn.setText("확인 중...")
-        self.latest_version_label.setText("최신 버전: 확인 중...")
-        
-        try:
-            from update_checker import UpdateChecker
-            
-            checker = UpdateChecker("In-Duck/MapleLand")
-            has_update, release_info = checker.check_for_updates()
-            
-            if has_update and release_info:
-                self.latest_version_label.setText(f"최신 버전: {release_info['version']} (업데이트 가능)")
-                self.latest_version_label.setStyleSheet("font-size: 11pt; color: #4CAF50; font-weight: bold;")
-                
-                # 업데이트 확인 다이얼로그
-                reply = QMessageBox.question(
-                    self,
-                    "업데이트 가능",
-                    f"새로운 버전이 있습니다!\n\n"
-                    f"현재 버전: {checker.get_current_version()}\n"
-                    f"최신 버전: {release_info['version']}\n\n"
-                    f"업데이트를 진행하시겠습니까?",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-                
-                if reply == QMessageBox.Yes:
-                    self.start_update(release_info['download_url'], release_info['version'])
-            else:
-                self.latest_version_label.setText(f"최신 버전: {checker.get_current_version()} (최신 버전 사용 중)")
-                self.latest_version_label.setStyleSheet("font-size: 11pt; color: #666;")
-                QMessageBox.information(self, "업데이트 확인", "이미 최신 버전을 사용하고 있습니다!")
-        
-        except Exception as e:
-            self.latest_version_label.setText("최신 버전: 확인 실패")
-            self.latest_version_label.setStyleSheet("font-size: 11pt; color: #f44336;")
-            QMessageBox.warning(self, "업데이트 확인 실패", f"업데이트 확인 중 오류가 발생했습니다:\n{str(e)}")
-        
-        finally:
-            self.check_update_btn.setEnabled(True)
-            self.check_update_btn.setText("업데이트 확인")
-    
-    def start_update(self, download_url: str, version: str):
-        """업데이트 시작"""
-        try:
-            # updater.py 실행
-            subprocess.Popen([sys.executable, "updater.py", download_url, version])
-            
-            # 현재 프로그램 종료
-            QMessageBox.information(self, "업데이트 시작", "업데이트를 시작합니다.\n프로그램이 종료됩니다.")
-            sys.exit(0)
-        
-        except Exception as e:
-            QMessageBox.critical(self, "업데이트 실패", f"업데이트 시작 중 오류가 발생했습니다:\n{str(e)}")
     
     def validate_and_accept(self):
         """설정을 검증하고 저장합니다."""
