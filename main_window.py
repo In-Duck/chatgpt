@@ -708,9 +708,6 @@ class MainWindow(QMainWindow):
                 }
             """)
 
-        if not was_active:
-            self.buff_last_run[1] = None
-
         self.update_status()
     
     def toggle_buff2(self):
@@ -750,9 +747,6 @@ class MainWindow(QMainWindow):
                 }
             """)
 
-        if not was_active:
-            self.buff_last_run[2] = None
-
         self.update_status()
     
     def toggle_buff3(self):
@@ -791,9 +785,6 @@ class MainWindow(QMainWindow):
                     background-color: #da190b;
                 }
             """)
-
-        if not was_active:
-            self.buff_last_run[3] = None
 
         self.update_status()
     
