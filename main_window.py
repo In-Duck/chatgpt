@@ -8,10 +8,12 @@ from settings_dialog import SettingsDialog
 from window_monitor import WindowMonitor
 from key_input_worker import KeyInputWorker
 from user_detector import UserDetector
+from image_clicker_worker import ImageClickerWorker
 from config_manager import ConfigManager
 from buff_worker import BuffWorker
 from hotkey_manager import HotkeyManager
 from system_tray import SystemTrayManager
+from image_detector import ImageDetector
 
 
 class MainWindow(QMainWindow):
@@ -26,9 +28,11 @@ class MainWindow(QMainWindow):
         self.window_monitor = WindowMonitor()
         self.key_input_worker = KeyInputWorker()
         self.user_detector = UserDetector()
+        self.image_clicker_worker = ImageClickerWorker()
         self.buff1_worker = BuffWorker(1)
         self.buff2_worker = BuffWorker(2)
         self.buff3_worker = BuffWorker(3)
+        self.image_detector = ImageDetector()  # 텔레그램 모니터 대신 이미지 감지기
 
         # 핫키 매니저 초기화
         self.hotkey_manager = HotkeyManager()
@@ -40,9 +44,11 @@ class MainWindow(QMainWindow):
         self.is_monitoring = False
         self.is_key_input_active = False
         self.is_detecting = False
+        self.is_image_clicking = False
         self.is_buff1_active = False
         self.is_buff2_active = False
         self.is_buff3_active = False
+        self.is_image_detecting = False  # 거탐 이미지 감지 상태
 
         # 핫키 안내 라벨 (나중에 업데이트용)
         self.hotkey_info_label = None
@@ -59,41 +65,11 @@ class MainWindow(QMainWindow):
         self.apply_config()
         self.setup_hotkeys()
         self.setup_system_tray()
-        self.check_for_updates_on_startup()
-
-    def check_for_updates_on_startup(self):
-        """프로그램 시작 시 업데이트 확인"""
-        try:
-            from update_checker import UpdateChecker
-
-            checker = UpdateChecker("In-Duck/MapleLand")
-            has_update, release_info = checker.check_for_updates()
-
-            if has_update and release_info:
-                reply = QMessageBox.question(
-                    self,
-                    "업데이트 가능",
-                    f"새로운 버전이 있습니다!\n\n"
-                    f"현재 버전: {checker.get_current_version()}\n"
-                    f"최신 버전: {release_info['version']}\n\n"
-                    f"지금 업데이트하시겠습니까?\n"
-                    f"(나중에 환경설정 > 업데이트 탭에서도 업데이트할 수 있습니다)",
-                    QMessageBox.Yes | QMessageBox.No
-                )
-
-                if reply == QMessageBox.Yes:
-                    import subprocess
-                    import sys
-                    subprocess.Popen([sys.executable, "updater.py", release_info['download_url'], release_info['version']])
-                    sys.exit(0)
-
-        except Exception as e:
-            print(f"업데이트 확인 중 오류: {e}")
 
     def init_ui(self):
         """UI 초기화"""
         self.setWindowTitle("창 모니터링 & 자동화")
-        self.setFixedSize(340, 480)
+        self.setFixedSize(340, 580)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -320,7 +296,10 @@ class MainWindow(QMainWindow):
         buff_info_widget.setLayout(buff_box)
         button_layout.addWidget(buff_info_widget)
 
-        # 유저탐색 버튼
+        # 셋째 줄: 유저탐색 / 리치
+        third_row = QHBoxLayout()
+        third_row.setSpacing(6)
+
         self.detect_btn = QPushButton("유저탐색")
         self.detect_btn.setMinimumHeight(36)
         self.detect_btn.setStyleSheet("""
@@ -336,7 +315,49 @@ class MainWindow(QMainWindow):
             }
         """)
         self.detect_btn.clicked.connect(self.toggle_detection)
-        button_layout.addWidget(self.detect_btn)
+        third_row.addWidget(self.detect_btn)
+
+        self.image_click_btn = QPushButton("리치")
+        self.image_click_btn.setMinimumHeight(36)
+        self.image_click_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #00BCD4;
+                color: white;
+                font-size: 10pt;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #0097A7;
+            }
+        """)
+        self.image_click_btn.clicked.connect(self.toggle_image_clicking)
+        third_row.addWidget(self.image_click_btn)
+
+        button_layout.addLayout(third_row)
+
+        # 넷째 줄: 거탐 감지 (이미지 기반)
+        fourth_row = QHBoxLayout()
+        fourth_row.setSpacing(6)
+
+        self.image_detect_btn = QPushButton("거탐 감지")
+        self.image_detect_btn.setMinimumHeight(36)
+        self.image_detect_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                font-size: 10pt;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #455A64;
+            }
+        """)
+        self.image_detect_btn.clicked.connect(self.toggle_image_detection)
+        fourth_row.addWidget(self.image_detect_btn)
+
+        button_layout.addLayout(fourth_row)
 
         # 일괄 시작/중지 버튼 (2개로 분리)
         batch_row = QHBoxLayout()
@@ -408,6 +429,17 @@ class MainWindow(QMainWindow):
         self.buff1_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(1, ts))
         self.buff2_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(2, ts))
         self.buff3_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(3, ts))
+        
+        # 이미지 클릭 워커 시그널 연결
+        self.image_clicker_worker.image_clicked.connect(self.on_image_clicked)
+        self.image_clicker_worker.error_occurred.connect(self.on_image_click_error)
+        
+        # 이미지 감지기 시그널 연결
+        self.image_detector.image_detected.connect(self.on_image_detected)
+
+    def on_image_detected(self, message: str):
+        """이미지 감지 시 호출"""
+        print(f"거탐 이미지 감지: {message}")
 
     def setup_hotkeys(self):
         """핫키 설정"""
@@ -416,7 +448,8 @@ class MainWindow(QMainWindow):
             pickup=self.config.get("hotkey_pickup", "f9"),
             buff=self.config.get("hotkey_buff", "f10"),
             monitor=self.config.get("hotkey_monitor", "f11"),
-            detector=self.config.get("hotkey_detector", "f12")
+            detector=self.config.get("hotkey_detector", "f12"),
+            image_click=self.config.get("hotkey_image_click", "")
         )
 
         # 핫키 시그널 연결
@@ -424,6 +457,7 @@ class MainWindow(QMainWindow):
         self.hotkey_manager.buff_toggle.connect(self.toggle_all_buffs)
         self.hotkey_manager.monitor_toggle.connect(self.toggle_monitoring)
         self.hotkey_manager.detector_toggle.connect(self.toggle_detection)
+        self.hotkey_manager.image_click_toggle.connect(self.toggle_image_clicking)
 
         # 핫키 활성화
         self.hotkey_manager.enable_hotkeys()
@@ -440,6 +474,14 @@ class MainWindow(QMainWindow):
         """버프 워커에서 마지막 실행 시간이 갱신될 때 호출"""
         self.buff_last_run[buff_number] = timestamp
         self.update_buff_info_labels()
+
+    def on_image_clicked(self, x: int, y: int):
+        """이미지 클릭 성공 시 호출"""
+        print(f"이미지 클릭: ({x}, {y})")
+
+    def on_image_click_error(self, error_msg: str):
+        """이미지 클릭 오류 발생 시 호출"""
+        print(f"이미지 클릭 오류: {error_msg}")
 
     def update_buff_info_labels(self):
         """버프 간격 및 마지막 실행 정보를 UI에 표시"""
@@ -591,6 +633,32 @@ class MainWindow(QMainWindow):
                 self.config.get("telegram_token", ""),
                 self.config.get("telegram_chat_id", ""),
                 self.config.get("user_nickname", "유저")
+            )
+
+        # 거탐 이미지 감지 설정 - false_detection_region 사용
+        template_paths = [
+            "gt1.png",
+            "gt2.png",
+            "gt3.png"
+        ]
+        if self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
+            # false_detection_region이 있으면 사용, 없으면 detection_region 사용
+            detection_region = self.config.get("false_detection_region", self.config.get("detection_region", (0, 0, 100, 100)))
+            self.image_detector.set_config(
+                detection_region,
+                template_paths,
+                self.config.get("telegram_token", ""),
+                self.config.get("telegram_chat_id", ""),
+                self.config.get("user_nickname", "유저"),
+                0.7
+            )
+
+        # 이미지 클릭 설정 - surak.png 자동 로드
+        if self.config.get("image_click_region"):
+            self.image_clicker_worker.set_config(
+                self.config.get("image_click_region", (0, 0, 100, 100)),
+                "surak.png",  # 항상 surak.png 사용
+                self.config.get("image_click_confidence", 0.8)
             )
 
     def toggle_monitoring(self):
@@ -838,6 +906,88 @@ class MainWindow(QMainWindow):
 
         self.update_status()
 
+    def toggle_image_clicking(self):
+        """이미지 클릭 토글"""
+        if not self.config.get("image_click_region"):
+            QMessageBox.warning(self, "경고", "이미지 클릭 설정이 완료되지 않았습니다.\n환경설정에서 구역을 설정해주세요.")
+            return
+
+        if self.is_image_clicking:
+            self.image_clicker_worker.stop()
+            self.is_image_clicking = False
+            self.image_click_btn.setText("리치")
+            self.image_click_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #00BCD4;
+                    color: white;
+                    font-size: 10pt;
+                    font-weight: bold;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #0097A7;
+                }
+            """)
+        else:
+            self.image_clicker_worker.start()
+            self.is_image_clicking = True
+            self.image_click_btn.setText("리치 ●")
+            self.image_click_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f44336;
+                    color: white;
+                    font-size: 10pt;
+                    font-weight: bold;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #da190b;
+                }
+            """)
+
+        self.update_status()
+
+    def toggle_image_detection(self):
+        """거탐 이미지 감지 토글"""
+        if not self.config.get("telegram_token") or not self.config.get("telegram_chat_id"):
+            QMessageBox.warning(self, "경고", "텔레그램 설정이 완료되지 않았습니다.\n환경설정에서 봇 토큰과 채팅 ID를 설정해주세요.")
+            return
+
+        if self.is_image_detecting:
+            self.image_detector.stop()
+            self.is_image_detecting = False
+            self.image_detect_btn.setText("거탐 감지")
+            self.image_detect_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #607D8B;
+                    color: white;
+                    font-size: 10pt;
+                    font-weight: bold;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #455A64;
+                }
+            """)
+        else:
+            self.image_detector.start()
+            self.is_image_detecting = True
+            self.image_detect_btn.setText("거탐 감지 ●")
+            self.image_detect_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f44336;
+                    color: white;
+                    font-size: 10pt;
+                    font-weight: bold;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #da190b;
+                }
+            """)
+
+        self.update_status()
+
     def batch_start_all(self):
         """모든 기능을 일괄 시작"""
         if not self.window_monitor.is_window_valid():
@@ -857,6 +1007,10 @@ class MainWindow(QMainWindow):
             self.toggle_buff3()
         if not self.is_detecting and self.config.get("detection_region"):
             self.toggle_detection()
+        if not self.is_image_clicking and self.config.get("image_click_region"):
+            self.toggle_image_clicking()
+        if not self.is_image_detecting and self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
+            self.toggle_image_detection()
 
     def batch_stop_all(self):
         """실행 중인 모든 기능을 일괄 중지"""
@@ -873,6 +1027,10 @@ class MainWindow(QMainWindow):
             self.toggle_buff3()
         if self.is_detecting:
             self.toggle_detection()
+        if self.is_image_clicking:
+            self.toggle_image_clicking()
+        if self.is_image_detecting:
+            self.toggle_image_detection()
 
     def open_settings(self):
         """환경설정 다이얼로그 열기"""
@@ -897,6 +1055,10 @@ class MainWindow(QMainWindow):
                 self.toggle_buff3()
             if self.is_detecting:
                 self.toggle_detection()
+            if self.is_image_clicking:
+                self.toggle_image_clicking()
+            if self.is_image_detecting:
+                self.toggle_image_detection()
 
             # 새 설정 적용
             self.apply_config()
@@ -906,7 +1068,8 @@ class MainWindow(QMainWindow):
                 pickup=new_settings.get("hotkey_pickup", ""),
                 buff=new_settings.get("hotkey_buff", ""),
                 monitor=new_settings.get("hotkey_monitor", ""),
-                detector=new_settings.get("hotkey_detector", "")
+                detector=new_settings.get("hotkey_detector", ""),
+                image_click=new_settings.get("hotkey_image_click", "")
             )
 
             # 핫키 안내 업데이트
@@ -932,6 +1095,10 @@ class MainWindow(QMainWindow):
             running_items.append("⚡ 버프3")
         if self.is_detecting:
             running_items.append("🔍 유저탐색")
+        if self.is_image_clicking:
+            running_items.append("🖱️ 리치")
+        if self.is_image_detecting:
+            running_items.append("📱 거탐감지")
 
         if running_items:
             status_text = "🟢 실행중: " + " | ".join(running_items)
@@ -970,6 +1137,10 @@ class MainWindow(QMainWindow):
             self.buff3_worker.stop()
         if self.is_detecting:
             self.user_detector.stop()
+        if self.is_image_clicking:
+            self.image_clicker_worker.stop()
+        if self.is_image_detecting:
+            self.image_detector.stop()
 
         # 핫키 비활성화
         self.hotkey_manager.disable_hotkeys()

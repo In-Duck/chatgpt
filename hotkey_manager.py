@@ -10,6 +10,7 @@ class HotkeyManager(QObject):
     buff_toggle = pyqtSignal()    # 버프 토글
     monitor_toggle = pyqtSignal() # 감지 토글
     detector_toggle = pyqtSignal() # 유저탐색 토글
+    image_click_toggle = pyqtSignal() # 이미지클릭 토글
     
     def __init__(self):
         super().__init__()
@@ -21,8 +22,9 @@ class HotkeyManager(QObject):
         self.hotkey_buff = "f10"
         self.hotkey_monitor = "f11"
         self.hotkey_detector = "f12"
+        self.hotkey_image_click = ""
     
-    def set_hotkeys(self, pickup="", buff="", monitor="", detector=""):
+    def set_hotkeys(self, pickup="", buff="", monitor="", detector="", image_click=""):
         """핫키를 설정합니다."""
         # 기존 핫키 비활성화
         if self.is_enabled:
@@ -48,6 +50,11 @@ class HotkeyManager(QObject):
             self.hotkey_detector = detector
         else:
             self.hotkey_detector = ""
+        
+        if image_click:
+            self.hotkey_image_click = image_click
+        else:
+            self.hotkey_image_click = ""
         
         # 핫키 다시 활성화
         self.enable_hotkeys()
@@ -77,6 +84,11 @@ class HotkeyManager(QObject):
             if self.hotkey_detector:
                 keyboard.add_hotkey(self.hotkey_detector, self._on_detector_toggle, suppress=True)
                 self.registered_hotkeys.append(self.hotkey_detector)
+            
+            # 이미지클릭 핫키
+            if self.hotkey_image_click:
+                keyboard.add_hotkey(self.hotkey_image_click, self._on_image_click_toggle, suppress=True)
+                self.registered_hotkeys.append(self.hotkey_image_click)
             
             self.is_enabled = True
             
@@ -121,6 +133,11 @@ class HotkeyManager(QObject):
         else:
             hotkeys.append("유저탐색=없음")
         
+        if self.hotkey_image_click:
+            hotkeys.append(f"{self.hotkey_image_click.upper()}=이미지클릭")
+        else:
+            hotkeys.append("이미지클릭=없음")
+        
         return " | ".join(hotkeys)
     
     def _on_pickup_toggle(self):
@@ -138,3 +155,7 @@ class HotkeyManager(QObject):
     def _on_detector_toggle(self):
         """유저탐색 핫키 콜백"""
         self.detector_toggle.emit()
+    
+    def _on_image_click_toggle(self):
+        """이미지클릭 핫키 콜백"""
+        self.image_click_toggle.emit()

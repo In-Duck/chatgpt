@@ -98,6 +98,11 @@ class KeyInputWorker(QObject):
             'shift': Key.shift,
             'ctrl': Key.ctrl,
             'alt': Key.alt,
+            'insert' : Key.insert,
+            'home' : Key.home,
+            'end' : Key.end,
+            'pgup' : Key.page_up,
+            'pgdn' : Key.page_down
         }
         
         key_lower = key_name.lower()

@@ -18,7 +18,7 @@ class UserDetector(QObject):
         self.timer = QTimer()
         self.timer.timeout.connect(self._check_region)
         self.timer.setSingleShot(True)  # 단발성 타이머로 설정하여 메모리 최적화
-        self.check_interval = 200
+        self.check_interval = 500  # 0.5초 간격으로 변경 (CPU 부담 감소)
 
         # 설정값
         self.region: Optional[Tuple[int, int, int, int]] = None  # (x1, y1, x2, y2)
@@ -30,6 +30,10 @@ class UserDetector(QObject):
         # 상태
         self.user_present = False
         self.last_check_result: Optional[int] = None  # 이전 체크 결과 캐싱
+        
+        # 캐시된 이미지 (메모리 최적화)
+        self._last_screenshot = None
+        self._screenshot_cache_time = 0
 
     def set_config(
         self,
@@ -52,6 +56,8 @@ class UserDetector(QObject):
         self.is_running = True
         self.user_present = False
         self.last_check_result = None
+        self._last_screenshot = None
+        self._screenshot_cache_time = 0
         self._check_region()
 
     def stop(self):
@@ -59,6 +65,8 @@ class UserDetector(QObject):
         self.is_running = False
         self.timer.stop()
         self.last_check_result = None
+        self._last_screenshot = None
+        self._screenshot_cache_time = 0
 
     def _check_region(self):
         """특정 구역에서 빨간색을 감지합니다."""
@@ -66,15 +74,17 @@ class UserDetector(QObject):
             return
 
         try:
-            # 화면 캡처
+            # 화면 캡처 (메모리 효율적으로)
             x1, y1, x2, y2 = self.region
             screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
 
-            # 빨간색 픽셀 카운트
+            # 빨간색 픽셀 카운트 (최적화된 버전)
             red_pixels = self._count_red_pixels_optimized(screenshot)
+            
+            # 스크린샷 메모리 해제
+            del screenshot
 
-            # --- 중요 변경 ---
-            # 이전 결과와 같더라도 상태(user_present)가 다를 수 있으므로 단순히 return 하지 않음
+            # 상태 변경 감지
             state_changed = False
 
             if red_pixels >= self.red_threshold:
@@ -95,9 +105,6 @@ class UserDetector(QObject):
             # 이전 결과 갱신
             self.last_check_result = red_pixels
 
-            # 디버깅 로그
-            # print(f"[DEBUG] red_pixels={red_pixels}, user_present={self.user_present}, state_changed={state_changed}")
-
         except Exception as e:
             print(f"구역 체크 중 오류: {e}")
 
@@ -107,10 +114,12 @@ class UserDetector(QObject):
                 self.timer.start(self.check_interval)
 
     def _count_red_pixels_optimized(self, image) -> int:
+        """최적화된 빨간색 픽셀 카운팅"""
         try:
             import numpy as np
 
-            img_array = np.array(image)
+            # NumPy 배열로 변환 (메모리 효율적)
+            img_array = np.array(image, dtype=np.uint8)
 
             # RGB 채널 분리
             r = img_array[:, :, 0]
@@ -120,24 +129,40 @@ class UserDetector(QObject):
             # 정확히 빨간색 (255, 0, 0)인 픽셀 찾기
             red_mask = (r >= 200) & (g <= 50) & (b <= 50)
             red_count = int(np.sum(red_mask))
+            
+            # 메모리 해제
+            del img_array, r, g, b, red_mask
 
             return red_count
         except ImportError:
+            # NumPy 없으면 기본 방식 사용
             return self._count_red_pixels(image)
+        except Exception as e:
+            print(f"픽셀 카운팅 오류: {e}")
+            return 0
 
     def _count_red_pixels(self, image) -> int:
-        pixels = image.load()
-        width, height = image.size
-        red_count = 0
+        """기본 빨간색 픽셀 카운팅 (NumPy 없을 때)"""
+        try:
+            pixels = image.load()
+            width, height = image.size
+            red_count = 0
 
-        for x in range(width):
-            for y in range(height):
-                r, g, b = pixels[x, y][:3]
-                # 정확히 빨간색 (255, 0, 0)만 감지
-                if r >= 200 and g <= 50 and b <= 50:
-                    red_count += 1
+            # 샘플링으로 성능 개선 (모든 픽셀 대신 일부만 체크)
+            step = 2  # 2픽셀마다 체크
+            for x in range(0, width, step):
+                for y in range(0, height, step):
+                    r, g, b = pixels[x, y][:3]
+                    if r >= 200 and g <= 50 and b <= 50:
+                        red_count += 1
 
-        return red_count
+            # 샘플링한 만큼 보정
+            red_count *= (step * step)
+            
+            return red_count
+        except Exception as e:
+            print(f"픽셀 카운팅 오류: {e}")
+            return 0
 
     def _send_telegram_message(self, message: str):
         """텔레그램으로 메시지를 전송합니다."""

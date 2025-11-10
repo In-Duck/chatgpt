@@ -17,7 +17,11 @@ class ConfigManager:
             "telegram_token": "",
             "telegram_chat_id": "",
             "user_nickname": "유저",
-            "detection_region": (0, 0, 100, 100)
+            "detection_region": (0, 0, 100, 100),
+            "image_click_region": (0, 0, 100, 100),
+            "image_click_template": "",
+            "image_click_confidence": 0.8,
+            "hotkey_image_click": ""
         }
     
     def load_config(self) -> Dict[str, Any]:

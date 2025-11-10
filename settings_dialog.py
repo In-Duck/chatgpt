@@ -1,12 +1,14 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QDoubleSpinBox, QSpinBox, QPushButton, 
                              QGroupBox, QRadioButton, QButtonGroup, QScrollArea, 
-                             QWidget, QTabWidget, QMessageBox)
+                             QWidget, QTabWidget, QMessageBox, QSlider)
 from PyQt5.QtCore import Qt, QTimer
 from window_monitor import WindowMonitor
 from region_preview import RegionPreviewWindow
+from region_selector import RegionSelectorWindow
 from hotkey_input_widget import HotkeyInputWidget
 from typing import Optional, Tuple
+from pathlib import Path
 
 
 class SettingsDialog(QDialog):
@@ -18,8 +20,21 @@ class SettingsDialog(QDialog):
         self.selected_window: Optional[Tuple[int, str]] = None
         self.preview_window: Optional[RegionPreviewWindow] = None
         self.preview_timer: Optional[QTimer] = None
+        self.region_selector: Optional[RegionSelectorWindow] = None
         self.init_ui()
         self.load_current_settings()
+    
+    def keyPressEvent(self, event):
+        """키 이벤트 처리 - ESC 키로 다이얼로그 닫기"""
+        if event.key() == Qt.Key_Escape:
+            # region_selector가 활성화되어 있으면 무시
+            if self.region_selector and self.region_selector.isVisible():
+                event.ignore()
+                return
+            # 그 외의 경우에만 다이얼로그 닫기
+            self.reject()
+        else:
+            super().keyPressEvent(event)
     
     def init_ui(self):
         """UI 초기화"""
@@ -47,6 +62,7 @@ class SettingsDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFixedHeight(180)
+        scroll.setAcceptDrops(False)
         
         scroll_widget = QWidget()
         self.window_list_layout = QVBoxLayout(scroll_widget)
@@ -290,6 +306,16 @@ class SettingsDialog(QDialog):
         nickname_row.addWidget(self.user_nickname_input)
         telegram_layout.addLayout(nickname_row)
         
+        # 주기적 메시지 간격 설정
+        periodic_row = QHBoxLayout()
+        periodic_row.addWidget(QLabel("상태 전송 간격(분):"))
+        self.periodic_interval_spin = QSpinBox()
+        self.periodic_interval_spin.setMinimum(1)
+        self.periodic_interval_spin.setMaximum(1440)  # 최대 24시간
+        self.periodic_interval_spin.setValue(60)  # 기본 60분
+        periodic_row.addWidget(self.periodic_interval_spin)
+        telegram_layout.addLayout(periodic_row)
+        
         telegram_group.setLayout(telegram_layout)
         detection_layout.addWidget(telegram_group)
         
@@ -330,14 +356,22 @@ class SettingsDialog(QDialog):
         coord_row2.addWidget(self.y2_spin)
         region_layout.addLayout(coord_row2)
         
-        # 구역 미리보기 버튼
-        self.preview_btn = QPushButton("구역 미리보기 (3초)")
+        # 버튼 행: 구역 선택 + 미리보기
+        button_row = QHBoxLayout()
+        self.select_region_btn = QPushButton("🎯 구역 선택")
+        self.select_region_btn.setMaximumHeight(30)
+        self.select_region_btn.clicked.connect(lambda: self.show_region_selector('detection'))
+        button_row.addWidget(self.select_region_btn)
+        
+        self.preview_btn = QPushButton("👁️ 미리보기")
         self.preview_btn.setMaximumHeight(30)
         self.preview_btn.clicked.connect(self.show_region_preview)
-        region_layout.addWidget(self.preview_btn)
+        button_row.addWidget(self.preview_btn)
+        region_layout.addLayout(button_row)
         
-        region_info = QLabel("※ 빨간색 테두리로 구역 표시")
+        region_info = QLabel("※ '구역 선택' 버튼을 눌러 드래그로 선택\n※ 또는 좌표를 직접 입력")
         region_info.setStyleSheet("color: #666; font-size: 9pt;")
+        region_info.setWordWrap(True)
         region_layout.addWidget(region_info)
         
         region_group.setLayout(region_layout)
@@ -346,7 +380,188 @@ class SettingsDialog(QDialog):
         detection_tab.setLayout(detection_layout)
         tabs.addTab(detection_tab, "유저 탐색")
         
-        # 탭 4: 핫키 설정
+        # 탭 4: 거탐 감지 설정
+        false_detection_tab = QWidget()
+        false_detection_layout = QVBoxLayout()
+        false_detection_layout.setSpacing(8)
+        false_detection_layout.setContentsMargins(6, 6, 6, 6)
+        
+        # 안내 메시지
+        false_info = QLabel("거탐 이미지(gt1.png, gt2.png, gt3.png)가 감지되면\n텔레그램으로 알림을 보냅니다.")
+        false_info.setStyleSheet("color: #666; font-size: 9pt; padding: 8px;")
+        false_info.setWordWrap(True)
+        false_detection_layout.addWidget(false_info)
+        
+        # 거탐 구역 설정
+        false_region_group = QGroupBox("거탐 감지 구역 설정")
+        false_region_layout = QVBoxLayout()
+        false_region_layout.setSpacing(6)
+        
+        false_coord_row1 = QHBoxLayout()
+        false_coord_row1.addWidget(QLabel("X1:"))
+        self.false_x1_spin = QSpinBox()
+        self.false_x1_spin.setMinimum(0)
+        self.false_x1_spin.setMaximum(9999)
+        self.false_x1_spin.setValue(0)
+        false_coord_row1.addWidget(self.false_x1_spin)
+        
+        false_coord_row1.addWidget(QLabel("Y1:"))
+        self.false_y1_spin = QSpinBox()
+        self.false_y1_spin.setMinimum(0)
+        self.false_y1_spin.setMaximum(9999)
+        self.false_y1_spin.setValue(0)
+        false_coord_row1.addWidget(self.false_y1_spin)
+        false_region_layout.addLayout(false_coord_row1)
+        
+        false_coord_row2 = QHBoxLayout()
+        false_coord_row2.addWidget(QLabel("X2:"))
+        self.false_x2_spin = QSpinBox()
+        self.false_x2_spin.setMinimum(0)
+        self.false_x2_spin.setMaximum(9999)
+        self.false_x2_spin.setValue(100)
+        false_coord_row2.addWidget(self.false_x2_spin)
+        
+        false_coord_row2.addWidget(QLabel("Y2:"))
+        self.false_y2_spin = QSpinBox()
+        self.false_y2_spin.setMinimum(0)
+        self.false_y2_spin.setMaximum(9999)
+        self.false_y2_spin.setValue(100)
+        false_coord_row2.addWidget(self.false_y2_spin)
+        false_region_layout.addLayout(false_coord_row2)
+        
+        # 버튼 행: 구역 선택 + 미리보기
+        false_button_row = QHBoxLayout()
+        self.false_select_region_btn = QPushButton("🎯 구역 선택")
+        self.false_select_region_btn.setMaximumHeight(30)
+        self.false_select_region_btn.clicked.connect(lambda: self.show_region_selector('false_detection'))
+        false_button_row.addWidget(self.false_select_region_btn)
+        
+        self.false_preview_btn = QPushButton("👁️ 미리보기")
+        self.false_preview_btn.setMaximumHeight(30)
+        self.false_preview_btn.clicked.connect(self.show_false_region_preview)
+        false_button_row.addWidget(self.false_preview_btn)
+        false_region_layout.addLayout(false_button_row)
+        
+        false_region_info = QLabel("※ '구역 선택' 버튼을 눌러 드래그로 선택\n※ 또는 좌표를 직접 입력\n※ 텔레그램 설정은 '유저 탐색' 탭에서 설정")
+        false_region_info.setStyleSheet("color: #666; font-size: 9pt;")
+        false_region_info.setWordWrap(True)
+        false_region_layout.addWidget(false_region_info)
+        
+        false_region_group.setLayout(false_region_layout)
+        false_detection_layout.addWidget(false_region_group)
+        
+        false_detection_layout.addStretch()
+        
+        false_detection_tab.setLayout(false_detection_layout)
+        tabs.addTab(false_detection_tab, "거탐 감지")
+        
+        # 탭 5: 리치 (이미지 클릭) 설정
+        image_click_tab = QWidget()
+        image_click_layout = QVBoxLayout()
+        image_click_layout.setSpacing(8)
+        image_click_layout.setContentsMargins(6, 6, 6, 6)
+        
+        # 안내 메시지
+        template_info_label = QLabel("리치 기능은 surak.png 이미지를 자동으로 사용합니다.")
+        template_info_label.setStyleSheet("color: #666; font-size: 9pt; padding: 8px;")
+        template_info_label.setWordWrap(True)
+        image_click_layout.addWidget(template_info_label)
+        
+        # 탐색 영역 설정
+        image_region_group = QGroupBox("탐색 영역 설정")
+        image_region_layout = QVBoxLayout()
+        image_region_layout.setSpacing(6)
+        
+        img_coord_row1 = QHBoxLayout()
+        img_coord_row1.addWidget(QLabel("X1:"))
+        self.img_x1_spin = QSpinBox()
+        self.img_x1_spin.setMinimum(0)
+        self.img_x1_spin.setMaximum(9999)
+        self.img_x1_spin.setValue(0)
+        img_coord_row1.addWidget(self.img_x1_spin)
+        
+        img_coord_row1.addWidget(QLabel("Y1:"))
+        self.img_y1_spin = QSpinBox()
+        self.img_y1_spin.setMinimum(0)
+        self.img_y1_spin.setMaximum(9999)
+        self.img_y1_spin.setValue(0)
+        img_coord_row1.addWidget(self.img_y1_spin)
+        image_region_layout.addLayout(img_coord_row1)
+        
+        img_coord_row2 = QHBoxLayout()
+        img_coord_row2.addWidget(QLabel("X2:"))
+        self.img_x2_spin = QSpinBox()
+        self.img_x2_spin.setMinimum(0)
+        self.img_x2_spin.setMaximum(9999)
+        self.img_x2_spin.setValue(100)
+        img_coord_row2.addWidget(self.img_x2_spin)
+        
+        img_coord_row2.addWidget(QLabel("Y2:"))
+        self.img_y2_spin = QSpinBox()
+        self.img_y2_spin.setMinimum(0)
+        self.img_y2_spin.setMaximum(9999)
+        self.img_y2_spin.setValue(100)
+        img_coord_row2.addWidget(self.img_y2_spin)
+        image_region_layout.addLayout(img_coord_row2)
+        
+        # 버튼 행: 구역 선택 + 미리보기
+        img_button_row = QHBoxLayout()
+        self.img_select_region_btn = QPushButton("🎯 구역 선택")
+        self.img_select_region_btn.setMaximumHeight(30)
+        self.img_select_region_btn.clicked.connect(lambda: self.show_region_selector('image_click'))
+        img_button_row.addWidget(self.img_select_region_btn)
+        
+        self.img_preview_btn = QPushButton("👁️ 미리보기")
+        self.img_preview_btn.setMaximumHeight(30)
+        self.img_preview_btn.clicked.connect(self.show_image_region_preview)
+        img_button_row.addWidget(self.img_preview_btn)
+        image_region_layout.addLayout(img_button_row)
+        
+        image_region_info = QLabel("※ '구역 선택' 버튼을 눌러 드래그로 선택\n※ 또는 좌표를 직접 입력")
+        image_region_info.setStyleSheet("color: #666; font-size: 9pt;")
+        image_region_info.setWordWrap(True)
+        image_region_layout.addWidget(image_region_info)
+        
+        image_region_group.setLayout(image_region_layout)
+        image_click_layout.addWidget(image_region_group)
+        
+        # 신뢰도(정확도) 설정
+        confidence_group = QGroupBox("매칭 신뢰도")
+        confidence_layout = QVBoxLayout()
+        confidence_layout.setSpacing(6)
+        
+        confidence_row = QHBoxLayout()
+        confidence_row.addWidget(QLabel("정확도:"))
+        
+        self.confidence_slider = QSlider(Qt.Horizontal)
+        self.confidence_slider.setMinimum(50)  # 0.5
+        self.confidence_slider.setMaximum(100)  # 1.0
+        self.confidence_slider.setValue(80)  # 0.8
+        self.confidence_slider.setTickPosition(QSlider.TicksBelow)
+        self.confidence_slider.setTickInterval(10)
+        self.confidence_slider.valueChanged.connect(self.update_confidence_label)
+        confidence_row.addWidget(self.confidence_slider)
+        
+        self.confidence_label = QLabel("0.80")
+        self.confidence_label.setMinimumWidth(40)
+        self.confidence_label.setStyleSheet("font-weight: bold;")
+        confidence_row.addWidget(self.confidence_label)
+        
+        confidence_layout.addLayout(confidence_row)
+        
+        confidence_info = QLabel("※ 높을수록 정확하지만 인식률 감소\n※ 낮을수록 오인식 가능성 증가")
+        confidence_info.setStyleSheet("color: #666; font-size: 9pt;")
+        confidence_layout.addWidget(confidence_info)
+        
+        confidence_group.setLayout(confidence_layout)
+        image_click_layout.addWidget(confidence_group)
+        
+        image_click_layout.addStretch()
+        
+        image_click_tab.setLayout(image_click_layout)
+        tabs.addTab(image_click_tab, "리치")
+        
+        # 탭 6: 핫키 설정
         hotkey_tab = QWidget()
         hotkey_layout = QVBoxLayout()
         hotkey_layout.setSpacing(8)
@@ -401,6 +616,17 @@ class SettingsDialog(QDialog):
         detector_hotkey_row.addWidget(clear_detector_btn)
         hotkey_layout.addLayout(detector_hotkey_row)
         
+        # 리치 핫키
+        image_click_hotkey_row = QHBoxLayout()
+        image_click_hotkey_row.addWidget(QLabel("리치:"))
+        self.image_click_hotkey_input = HotkeyInputWidget()
+        image_click_hotkey_row.addWidget(self.image_click_hotkey_input)
+        clear_image_click_btn = QPushButton("초기화")
+        clear_image_click_btn.setMaximumWidth(60)
+        clear_image_click_btn.clicked.connect(self.image_click_hotkey_input.clear_hotkey)
+        image_click_hotkey_row.addWidget(clear_image_click_btn)
+        hotkey_layout.addLayout(image_click_hotkey_row)
+        
         hotkey_layout.addStretch()
         
         hotkey_tab.setLayout(hotkey_layout)
@@ -422,6 +648,105 @@ class SettingsDialog(QDialog):
         layout.addLayout(button_layout)
         
         self.setLayout(layout)
+    
+    def show_region_selector(self, region_type: str):
+        """영역 선택기 표시"""
+        # 기존 선택기가 있으면 닫기
+        if self.region_selector:
+            self.region_selector.close()
+        
+        self.region_selector = RegionSelectorWindow()
+        
+        # 영역 선택 완료 시그널 연결
+        if region_type == 'detection':
+            self.region_selector.region_selected.connect(self.on_detection_region_selected)
+        elif region_type == 'false_detection':
+            self.region_selector.region_selected.connect(self.on_false_detection_region_selected)
+        elif region_type == 'image_click':
+            self.region_selector.region_selected.connect(self.on_image_click_region_selected)
+        
+        self.region_selector.show_selector()
+    
+    def on_detection_region_selected(self, region: Tuple[int, int, int, int]):
+        """유저 탐색 영역 선택 완료"""
+        x1, y1, x2, y2 = region
+        self.x1_spin.setValue(x1)
+        self.y1_spin.setValue(y1)
+        self.x2_spin.setValue(x2)
+        self.y2_spin.setValue(y2)
+    
+    def on_false_detection_region_selected(self, region: Tuple[int, int, int, int]):
+        """거탐 감지 영역 선택 완료"""
+        x1, y1, x2, y2 = region
+        self.false_x1_spin.setValue(x1)
+        self.false_y1_spin.setValue(y1)
+        self.false_x2_spin.setValue(x2)
+        self.false_y2_spin.setValue(y2)
+    
+    def on_image_click_region_selected(self, region: Tuple[int, int, int, int]):
+        """리치 영역 선택 완료"""
+        x1, y1, x2, y2 = region
+        self.img_x1_spin.setValue(x1)
+        self.img_y1_spin.setValue(y1)
+        self.img_x2_spin.setValue(x2)
+        self.img_y2_spin.setValue(y2)
+    
+    def update_confidence_label(self, value):
+        """신뢰도 슬라이더 값 변경 시 레이블 업데이트"""
+        confidence = value / 100.0
+        self.confidence_label.setText(f"{confidence:.2f}")
+    
+    def show_false_region_preview(self):
+        """거탐 감지 영역 미리보기"""
+        region = (
+            self.false_x1_spin.value(),
+            self.false_y1_spin.value(),
+            self.false_x2_spin.value(),
+            self.false_y2_spin.value()
+        )
+        
+        # 기존 미리보기 창 제거
+        if self.preview_window:
+            self.preview_window.close()
+        
+        # 새 미리보기 창 생성
+        self.preview_window = RegionPreviewWindow(region)
+        self.preview_window.show_preview()
+        
+        # 3초 후 자동으로 닫기
+        if self.preview_timer:
+            self.preview_timer.stop()
+        
+        self.preview_timer = QTimer()
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.timeout.connect(self.hide_region_preview)
+        self.preview_timer.start(3000)
+    
+    def show_image_region_preview(self):
+        """리치 영역 미리보기"""
+        region = (
+            self.img_x1_spin.value(),
+            self.img_y1_spin.value(),
+            self.img_x2_spin.value(),
+            self.img_y2_spin.value()
+        )
+        
+        # 기존 미리보기 창 제거
+        if self.preview_window:
+            self.preview_window.close()
+        
+        # 새 미리보기 창 생성
+        self.preview_window = RegionPreviewWindow(region)
+        self.preview_window.show_preview()
+        
+        # 3초 후 자동으로 닫기
+        if self.preview_timer:
+            self.preview_timer.stop()
+        
+        self.preview_timer = QTimer()
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.timeout.connect(self.hide_region_preview)
+        self.preview_timer.start(3000)
     
     def validate_and_accept(self):
         """설정을 검증하고 저장합니다."""
@@ -449,12 +774,26 @@ class SettingsDialog(QDialog):
             if self.buff3_min_spin.value() > self.buff3_max_spin.value():
                 errors.append("버프3: 최소 간격이 최대 간격보다 큽니다.")
         
-        # 구역 설정 검증
+        # 유저 탐색 구역 설정 검증
         if self.x1_spin.value() >= self.x2_spin.value():
-            errors.append("탐색 구역: X1이 X2보다 크거나 같습니다.")
+            errors.append("유저 탐색 구역: X1이 X2보다 크거나 같습니다.")
         
         if self.y1_spin.value() >= self.y2_spin.value():
-            errors.append("탐색 구역: Y1이 Y2보다 크거나 같습니다.")
+            errors.append("유저 탐색 구역: Y1이 Y2보다 크거나 같습니다.")
+        
+        # 거탐 감지 구역 설정 검증
+        if self.false_x1_spin.value() >= self.false_x2_spin.value():
+            errors.append("거탐 감지 구역: X1이 X2보다 크거나 같습니다.")
+        
+        if self.false_y1_spin.value() >= self.false_y2_spin.value():
+            errors.append("거탐 감지 구역: Y1이 Y2보다 크거나 같습니다.")
+        
+        # 리치 구역 설정 검증
+        if self.img_x1_spin.value() >= self.img_x2_spin.value():
+            errors.append("리치 영역: X1이 X2보다 크거나 같습니다.")
+        
+        if self.img_y1_spin.value() >= self.img_y2_spin.value():
+            errors.append("리치 영역: Y1이 Y2보다 크거나 같습니다.")
         
         # 핫키 중복 검증
         hotkeys = {}
@@ -471,6 +810,10 @@ class SettingsDialog(QDialog):
         if self.detector_hotkey_input.get_hotkey():
             if self.detector_hotkey_input.get_hotkey() in hotkeys.values():
                 errors.append("핫키 중복: 유저탐색 핫키가 다른 기능과 중복됩니다.")
+            hotkeys['유저탐색'] = self.detector_hotkey_input.get_hotkey()
+        if self.image_click_hotkey_input.get_hotkey():
+            if self.image_click_hotkey_input.get_hotkey() in hotkeys.values():
+                errors.append("핫키 중복: 리치 핫키가 다른 기능과 중복됩니다.")
         
         # 오류가 있으면 경고 메시지 표시
         if errors:
@@ -565,13 +908,37 @@ class SettingsDialog(QDialog):
         if "user_nickname" in self.current_config:
             self.user_nickname_input.setText(self.current_config["user_nickname"])
         
-        # 구역 설정
+        if "periodic_interval_minutes" in self.current_config:
+            self.periodic_interval_spin.setValue(self.current_config["periodic_interval_minutes"])
+        
+        # 유저 탐색 구역 설정
         if "detection_region" in self.current_config:
             region = self.current_config["detection_region"]
             self.x1_spin.setValue(region[0])
             self.y1_spin.setValue(region[1])
             self.x2_spin.setValue(region[2])
             self.y2_spin.setValue(region[3])
+        
+        # 거탐 감지 구역 설정
+        if "false_detection_region" in self.current_config:
+            region = self.current_config["false_detection_region"]
+            self.false_x1_spin.setValue(region[0])
+            self.false_y1_spin.setValue(region[1])
+            self.false_x2_spin.setValue(region[2])
+            self.false_y2_spin.setValue(region[3])
+        
+        # 리치 설정
+        if "image_click_region" in self.current_config:
+            region = self.current_config["image_click_region"]
+            self.img_x1_spin.setValue(region[0])
+            self.img_y1_spin.setValue(region[1])
+            self.img_x2_spin.setValue(region[2])
+            self.img_y2_spin.setValue(region[3])
+        
+        if "image_click_confidence" in self.current_config:
+            confidence = self.current_config["image_click_confidence"]
+            slider_value = int(confidence * 100)
+            self.confidence_slider.setValue(slider_value)
         
         # 핫키 설정
         if "hotkey_pickup" in self.current_config:
@@ -585,6 +952,9 @@ class SettingsDialog(QDialog):
         
         if "hotkey_detector" in self.current_config:
             self.detector_hotkey_input.set_hotkey(self.current_config["hotkey_detector"])
+        
+        if "hotkey_image_click" in self.current_config:
+            self.image_click_hotkey_input.set_hotkey(self.current_config["hotkey_image_click"])
     
     def show_region_preview(self):
         """구역 미리보기를 표시합니다."""
@@ -651,19 +1021,37 @@ class SettingsDialog(QDialog):
             "telegram_token": self.telegram_token_input.text(),
             "telegram_chat_id": self.telegram_chat_id_input.text(),
             "user_nickname": self.user_nickname_input.text() or "유저",
+            "periodic_interval_minutes": self.periodic_interval_spin.value(),
             "detection_region": (
                 self.x1_spin.value(),
                 self.y1_spin.value(),
                 self.x2_spin.value(),
                 self.y2_spin.value()
             ),
+            "false_detection_region": (
+                self.false_x1_spin.value(),
+                self.false_y1_spin.value(),
+                self.false_x2_spin.value(),
+                self.false_y2_spin.value()
+            ),
+            "image_click_template": "surak.png",
+            "image_click_region": (
+                self.img_x1_spin.value(),
+                self.img_y1_spin.value(),
+                self.img_x2_spin.value(),
+                self.img_y2_spin.value()
+            ),
+            "image_click_confidence": self.confidence_slider.value() / 100.0,
             "hotkey_pickup": self.pickup_hotkey_input.get_hotkey(),
             "hotkey_buff": self.buff_hotkey_input.get_hotkey(),
             "hotkey_monitor": self.monitor_hotkey_input.get_hotkey(),
-            "hotkey_detector": self.detector_hotkey_input.get_hotkey()
+            "hotkey_detector": self.detector_hotkey_input.get_hotkey(),
+            "hotkey_image_click": self.image_click_hotkey_input.get_hotkey()
         }
     
     def closeEvent(self, event):
         """다이얼로그 닫을 때 미리보기 창도 닫기"""
         self.hide_region_preview()
+        if self.region_selector:
+            self.region_selector.close()
         event.accept()
