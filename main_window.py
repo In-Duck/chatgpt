@@ -1,5 +1,5 @@
 import time
-
+from utils import resource_path
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QTextEdit, QMessageBox)
 from PyQt5.QtCore import Qt, QTimer
@@ -486,7 +486,7 @@ class MainWindow(QMainWindow):
 
     def on_image_release_completed(self):
         """리치 이미지가 사라진 후 호출"""
-        print("리치 이미지 사라짐 - 10분 대기 후 재탐지 예정")
+        print("리치 이미지 사라짐 - 재탐지 예정")
 
         if self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
             nickname = self.config.get("user_nickname", "유저")
@@ -672,9 +672,9 @@ class MainWindow(QMainWindow):
         # 이미지 클릭 설정 - surak.png 자동 로드
         if self.config.get("image_click_region"):
             self.image_clicker_worker.set_config(
-                self.config.get("image_click_region", (0, 0, 100, 100)),
-                "images/surak.png",  # 항상 surak.png 사용
-                self.config.get("image_click_confidence", 0.8)
+            self.config.get("image_click_region", (0, 0, 100, 100)),
+            resource_path("images/surak.png"),  # 🔥 리소스 경로로 변환
+            self.config.get("image_click_confidence", 0.8)
             )
 
     def toggle_monitoring(self):

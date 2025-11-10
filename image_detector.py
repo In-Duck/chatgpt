@@ -12,6 +12,9 @@ import numpy as np
 from PIL import ImageGrab
 from telegram import Bot
 from telegram.error import TelegramError
+from utils import resource_path
+
+
 
 
 class ImageDetector(QObject):
@@ -78,7 +81,7 @@ class ImageDetector(QObject):
         self.template_source_count = len(template_paths)
         for path in template_paths:
             try:
-                template = cv2.imread(path)
+                template = cv2.imread(resource_path(path))
                 if template is None:
                     print(f"템플릿 이미지 로드 실패: {path}")
                     continue

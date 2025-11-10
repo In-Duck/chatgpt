@@ -1,7 +1,7 @@
 import time
 from typing import Optional, Tuple
 from pathlib import Path
-
+from utils import resource_path
 import cv2
 import numpy as np
 import pyautogui
@@ -74,12 +74,13 @@ class ImageClickerWorker(QObject):
 
         if template_path and Path(template_path).exists():
             try:
-                img = cv2.imread(template_path, cv2.IMREAD_COLOR)
-                if img is None:
+                full_path = resource_path(template_path)
+                template_bgr = cv2.imread(full_path, cv2.IMREAD_COLOR)
+                if template_bgr is None:
                     self.error_occurred.emit(f"이미지를 로드할 수 없습니다: {template_path}")
                     self.template_image = None
                 else:
-                    self.template_image = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    self.template_image = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
                     print(f"템플릿 이미지 로드 성공 (흑백 변환): {template_path}")
             except Exception as e:
                 self.error_occurred.emit(f"이미지 로드 중 오류: {e}")
