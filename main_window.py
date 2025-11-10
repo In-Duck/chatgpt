@@ -429,11 +429,12 @@ class MainWindow(QMainWindow):
         self.buff1_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(1, ts))
         self.buff2_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(2, ts))
         self.buff3_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(3, ts))
-        
+
         # 이미지 클릭 워커 시그널 연결
         self.image_clicker_worker.image_clicked.connect(self.on_image_clicked)
         self.image_clicker_worker.error_occurred.connect(self.on_image_click_error)
-        
+        self.image_clicker_worker.release_completed.connect(self.on_image_release_completed)
+
         # 이미지 감지기 시그널 연결
         self.image_detector.image_detected.connect(self.on_image_detected)
 
@@ -482,6 +483,15 @@ class MainWindow(QMainWindow):
     def on_image_click_error(self, error_msg: str):
         """이미지 클릭 오류 발생 시 호출"""
         print(f"이미지 클릭 오류: {error_msg}")
+
+    def on_image_release_completed(self):
+        """리치 이미지가 사라진 후 호출"""
+        print("리치 이미지 사라짐 - 10분 대기 후 재탐지 예정")
+
+        if self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
+            nickname = self.config.get("user_nickname", "유저")
+            message = f"✅ {nickname} 리치 해제 완료"
+            self.image_detector.send_notification(message)
 
     def update_buff_info_labels(self):
         """버프 간격 및 마지막 실행 정보를 UI에 표시"""
@@ -637,10 +647,16 @@ class MainWindow(QMainWindow):
 
         # 거탐 이미지 감지 설정 - false_detection_region 사용
         template_paths = [
-            "gt1.png",
-            "gt2.png",
-            "gt3.png"
+            "images/gt1.png",
+            "images/gt2.png",
+            "images/gt3.png",
+            "images/gt4.png",
+            "images/gt5.png",
+            "images/gt6.png",
+            "images/gt7.png",
+            "images/gt8.png"
         ]
+
         if self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
             # false_detection_region이 있으면 사용, 없으면 detection_region 사용
             detection_region = self.config.get("false_detection_region", self.config.get("detection_region", (0, 0, 100, 100)))
@@ -657,12 +673,16 @@ class MainWindow(QMainWindow):
         if self.config.get("image_click_region"):
             self.image_clicker_worker.set_config(
                 self.config.get("image_click_region", (0, 0, 100, 100)),
-                "surak.png",  # 항상 surak.png 사용
+                "images/surak.png",  # 항상 surak.png 사용
                 self.config.get("image_click_confidence", 0.8)
             )
 
     def toggle_monitoring(self):
         """창 감지 토글"""
+        self._toggle_monitoring_impl()
+
+    def _toggle_monitoring_impl(self):
+        """창 감지 토글 내부 구현"""
         if not self.window_monitor.is_window_valid():
             QMessageBox.warning(self, "경고", "모니터링할 창이 선택되지 않았거나 유효하지 않습니다.\n환경설정에서 창을 선택해주세요.")
             return
@@ -1076,8 +1096,6 @@ class MainWindow(QMainWindow):
             self.update_hotkey_info()
 
             self.update_status()
-
-            QMessageBox.information(self, "알림", "설정이 저장되었습니다.")
 
     def update_status(self):
         """상태 텍스트 업데이트 - 간결하게"""

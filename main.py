@@ -1,7 +1,9 @@
 import sys
 from PyQt5.QtWidgets import QApplication
 from main_window import MainWindow
+import builtins
 
+# builtins.print = lambda *a, **k: None
 
 def main():
     """애플리케이션 진입점"""

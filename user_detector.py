@@ -1,4 +1,7 @@
 import asyncio
+import threading
+import time
+from queue import Empty, Queue
 from typing import Optional, Tuple
 
 from PIL import ImageGrab
@@ -18,7 +21,7 @@ class UserDetector(QObject):
         self.timer = QTimer()
         self.timer.timeout.connect(self._check_region)
         self.timer.setSingleShot(True)  # 단발성 타이머로 설정하여 메모리 최적화
-        self.check_interval = 500  # 0.5초 간격으로 변경 (CPU 부담 감소)
+        self.check_interval = 200
 
         # 설정값
         self.region: Optional[Tuple[int, int, int, int]] = None  # (x1, y1, x2, y2)
@@ -30,10 +33,11 @@ class UserDetector(QObject):
         # 상태
         self.user_present = False
         self.last_check_result: Optional[int] = None  # 이전 체크 결과 캐싱
-        
-        # 캐시된 이미지 (메모리 최적화)
-        self._last_screenshot = None
-        self._screenshot_cache_time = 0
+
+        # 텔레그램 전송 관리
+        self._send_queue: "Queue[str]" = Queue()
+        self._sender_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
 
     def set_config(
         self,
@@ -53,11 +57,13 @@ class UserDetector(QObject):
         if self.is_running or not self.region:
             return
 
+        # shutdown()으로 중지된 뒤 다시 시작될 때를 대비해 전송 워커 상태를 초기화
+        self._stop_event.clear()
+        self._ensure_sender_thread()
+
         self.is_running = True
         self.user_present = False
         self.last_check_result = None
-        self._last_screenshot = None
-        self._screenshot_cache_time = 0
         self._check_region()
 
     def stop(self):
@@ -65,8 +71,7 @@ class UserDetector(QObject):
         self.is_running = False
         self.timer.stop()
         self.last_check_result = None
-        self._last_screenshot = None
-        self._screenshot_cache_time = 0
+        self.user_present = False
 
     def _check_region(self):
         """특정 구역에서 빨간색을 감지합니다."""
@@ -74,17 +79,15 @@ class UserDetector(QObject):
             return
 
         try:
-            # 화면 캡처 (메모리 효율적으로)
+            # 화면 캡처
             x1, y1, x2, y2 = self.region
             screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
 
-            # 빨간색 픽셀 카운트 (최적화된 버전)
+            # 빨간색 픽셀 카운트
             red_pixels = self._count_red_pixels_optimized(screenshot)
-            
-            # 스크린샷 메모리 해제
-            del screenshot
 
-            # 상태 변경 감지
+            # --- 중요 변경 ---
+            # 이전 결과와 같더라도 상태(user_present)가 다를 수 있으므로 단순히 return 하지 않음
             state_changed = False
 
             if red_pixels >= self.red_threshold:
@@ -105,6 +108,9 @@ class UserDetector(QObject):
             # 이전 결과 갱신
             self.last_check_result = red_pixels
 
+            # 디버깅 로그
+            # print(f"[DEBUG] red_pixels={red_pixels}, user_present={self.user_present}, state_changed={state_changed}")
+
         except Exception as e:
             print(f"구역 체크 중 오류: {e}")
 
@@ -114,12 +120,10 @@ class UserDetector(QObject):
                 self.timer.start(self.check_interval)
 
     def _count_red_pixels_optimized(self, image) -> int:
-        """최적화된 빨간색 픽셀 카운팅"""
         try:
             import numpy as np
 
-            # NumPy 배열로 변환 (메모리 효율적)
-            img_array = np.array(image, dtype=np.uint8)
+            img_array = np.array(image)
 
             # RGB 채널 분리
             r = img_array[:, :, 0]
@@ -129,58 +133,93 @@ class UserDetector(QObject):
             # 정확히 빨간색 (255, 0, 0)인 픽셀 찾기
             red_mask = (r >= 200) & (g <= 50) & (b <= 50)
             red_count = int(np.sum(red_mask))
-            
-            # 메모리 해제
-            del img_array, r, g, b, red_mask
 
             return red_count
         except ImportError:
-            # NumPy 없으면 기본 방식 사용
             return self._count_red_pixels(image)
-        except Exception as e:
-            print(f"픽셀 카운팅 오류: {e}")
-            return 0
 
     def _count_red_pixels(self, image) -> int:
-        """기본 빨간색 픽셀 카운팅 (NumPy 없을 때)"""
-        try:
-            pixels = image.load()
-            width, height = image.size
-            red_count = 0
+        pixels = image.load()
+        width, height = image.size
+        red_count = 0
 
-            # 샘플링으로 성능 개선 (모든 픽셀 대신 일부만 체크)
-            step = 2  # 2픽셀마다 체크
-            for x in range(0, width, step):
-                for y in range(0, height, step):
-                    r, g, b = pixels[x, y][:3]
-                    if r >= 200 and g <= 50 and b <= 50:
-                        red_count += 1
+        for x in range(width):
+            for y in range(height):
+                r, g, b = pixels[x, y][:3]
+                # 정확히 빨간색 (255, 0, 0)만 감지
+                if r >= 200 and g <= 50 and b <= 50:
+                    red_count += 1
 
-            # 샘플링한 만큼 보정
-            red_count *= (step * step)
-            
-            return red_count
-        except Exception as e:
-            print(f"픽셀 카운팅 오류: {e}")
-            return 0
+        return red_count
 
     def _send_telegram_message(self, message: str):
         """텔레그램으로 메시지를 전송합니다."""
         if not self.telegram_token or not self.telegram_chat_id:
             return
 
-        try:
-            asyncio.run(self._async_send_message(message))
-        except RuntimeError as exc:
-            # PyQt 환경 등에서 이벤트 루프가 이미 실행 중인 경우를 대비한 폴백
-            if "asyncio.run() cannot be called" in str(exc):
-                loop = asyncio.new_event_loop()
-                try:
-                    loop.run_until_complete(self._async_send_message(message))
-                finally:
-                    loop.close()
-            else:
-                print(f"텔레그램 메시지 전송 실패: {exc}")
+        if self._stop_event.is_set():
+            return
+
+        self._ensure_sender_thread()
+        self._send_queue.put(message)
+
+    def _ensure_sender_thread(self):
+        """전송용 백그라운드 스레드가 실행 중인지 확인합니다."""
+        if self._sender_thread and self._sender_thread.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._sender_thread = threading.Thread(
+            target=self._sender_worker,
+            name="TelegramSender",
+            daemon=True,
+        )
+        self._sender_thread.start()
+
+    def _sender_worker(self):
+        """텔레그램 메시지를 순차적으로 전송하는 워커."""
+        while True:
+            try:
+                message = self._send_queue.get(timeout=0.2)
+            except Empty:
+                if self._stop_event.is_set():
+                    break
+                continue
+
+            self._send_with_retry(message)
+            self._send_queue.task_done()
+
+        # 남은 항목 정리
+        while True:
+            try:
+                self._send_queue.get_nowait()
+                self._send_queue.task_done()
+            except Empty:
+                break
+
+    def _send_with_retry(self, message: str, retries: int = 3):
+        """전송 실패 시 재시도합니다."""
+        for attempt in range(1, retries + 1):
+            try:
+                asyncio.run(self._async_send_message(message))
+                return
+            except Exception as exc:
+                print(f"텔레그램 메시지 전송 실패({attempt}/{retries}): {exc}")
+                if attempt < retries:
+                    time.sleep(0.5)
+        else:
+            print("텔레그램 메시지 전송이 반복 실패하여 포기합니다.")
+
+    def shutdown(self):
+        """전송 스레드를 정리합니다."""
+        self._stop_event.set()
+
+        if self._sender_thread and self._sender_thread.is_alive():
+            # 대기 중인 메시지를 모두 처리하도록 기다립니다.
+            self._send_queue.join()
+            self._sender_thread.join(timeout=1.0)
+
+        self._sender_thread = None
 
     async def _async_send_message(self, message: str):
         """비동기로 텔레그램 메시지를 전송합니다."""

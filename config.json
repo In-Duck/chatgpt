@@ -1,8 +1,5 @@
 {
-    "selected_window": {
-        "hwnd": 10225182,
-        "title": "MapleStory Worlds"
-    },
+    "selected_window": null,
     "key_to_press": "z",
     "min_interval": 1.0,
     "max_interval": 3.0,
@@ -11,10 +8,10 @@
     "telegram_chat_id": "6193462893",
     "user_nickname": "유저",
     "detection_region": [
-        0,
-        0,
-        100,
-        100
+        751,
+        446,
+        1153,
+        623
     ],
     "buff1_key": "1",
     "buff1_min_interval": 5.0,
@@ -33,20 +30,20 @@
     "hotkey_monitor": "",
     "hotkey_detector": "",
     "image_click_region": [
-        800,
-        500,
-        1100,
-        550
+        665,
+        420,
+        1236,
+        753
     ],
     "image_click_template": "surak.png",
-    "image_click_confidence": 0.8,
+    "image_click_confidence": 0.9,
     "hotkey_image_click": "",
     "geotam_alert_interval": 1,
     "periodic_interval_minutes": 1,
     "false_detection_region": [
-        800,
-        400,
-        1200,
-        800
+        763,
+        406,
+        1268,
+        730
     ]
 }
