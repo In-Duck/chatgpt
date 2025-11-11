@@ -1,5 +1,6 @@
 import time
-from utils import resource_path
+import win32gui
+import win32con
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QTextEdit, QMessageBox)
 from PyQt5.QtCore import Qt, QTimer
@@ -14,7 +15,6 @@ from buff_worker import BuffWorker
 from hotkey_manager import HotkeyManager
 from system_tray import SystemTrayManager
 from image_detector import ImageDetector
-
 
 class MainWindow(QMainWindow):
     """메인 윈도우"""
@@ -61,7 +61,7 @@ class MainWindow(QMainWindow):
         self.buff_last_run = {1: None, 2: None, 3: None}
 
         self.init_ui()
-        self.connect_signals()
+        self.setup_connections()
         self.apply_config()
         self.setup_hotkeys()
         self.setup_system_tray()
@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         """UI 초기화"""
         self.setWindowTitle("창 모니터링 & 자동화")
-        self.setFixedSize(340, 580)
+        self.setFixedSize(340, 640)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -111,6 +111,29 @@ class MainWindow(QMainWindow):
         # 버튼 영역
         button_layout = QVBoxLayout()
         button_layout.setSpacing(6)
+
+        # 창 정렬 버튼 (NEW)
+        align_row = QHBoxLayout()
+        align_row.setSpacing(6)
+        
+        self.align_window_btn = QPushButton("📐 창 정렬")
+        self.align_window_btn.setMinimumHeight(36)
+        self.align_window_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                font-size: 10pt;
+                font-weight: bold;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.align_window_btn.clicked.connect(self.align_selected_window)
+        align_row.addWidget(self.align_window_btn)
+        
+        button_layout.addLayout(align_row)
 
         # 첫째 줄: 감지 시작 / 줍기 시작
         first_row = QHBoxLayout()
@@ -296,7 +319,7 @@ class MainWindow(QMainWindow):
         buff_info_widget.setLayout(buff_box)
         button_layout.addWidget(buff_info_widget)
 
-        # 셋째 줄: 유저탐색 / 리치
+        # 셋째 줄: 유저탐색 / 리치+시퀀스
         third_row = QHBoxLayout()
         third_row.setSpacing(6)
 
@@ -336,7 +359,6 @@ class MainWindow(QMainWindow):
 
         button_layout.addLayout(third_row)
 
-        # 넷째 줄: 거탐 감지 (이미지 기반)
         fourth_row = QHBoxLayout()
         fourth_row.setSpacing(6)
 
@@ -424,7 +446,44 @@ class MainWindow(QMainWindow):
         self.update_status()
         self.update_buff_info_labels()
 
-    def connect_signals(self):
+    def align_selected_window(self):
+        """선택된 창을 지정된 위치와 크기로 정렬 (NEW)"""
+        if not self.config.get("selected_window"):
+            QMessageBox.warning(self, "경고", "먼저 환경설정에서 창을 선택해주세요.")
+            return
+
+        try:
+            hwnd = self.config["selected_window"]["hwnd"]
+            title = self.config["selected_window"]["title"]
+            
+            # 창이 유효한지 확인
+            if not win32gui.IsWindow(hwnd):
+                QMessageBox.warning(self, "경고", f"'{title}' 창을 찾을 수 없습니다.\n창이 닫혔거나 유효하지 않습니다.")
+                return
+
+            # 고정 위치와 크기: x1=20, y1=20, x2=1316, y2=779
+            x, y = 20, 20
+            width = 1316 - 20  # 1296
+            height = 779 - 20  # 759
+
+            # 창 이동 및 크기 조정
+            win32gui.SetWindowPos(
+                hwnd,
+                win32con.HWND_TOP,
+                x, y, width, height,
+                win32con.SWP_SHOWWINDOW
+            )
+
+            QMessageBox.information(
+                self,
+                "성공",
+                f"'{title}' 창이 정렬되었습니다.\n위치: ({x}, {y})\n크기: {width}x{height}"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"창 정렬 중 오류 발생:\n{e}")
+
+    def setup_connections(self):
         """시그널 연결"""
         self.buff1_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(1, ts))
         self.buff2_worker.last_run_updated.connect(lambda ts: self.on_buff_last_run_updated(2, ts))
@@ -434,6 +493,11 @@ class MainWindow(QMainWindow):
         self.image_clicker_worker.image_clicked.connect(self.on_image_clicked)
         self.image_clicker_worker.error_occurred.connect(self.on_image_click_error)
         self.image_clicker_worker.release_completed.connect(self.on_image_release_completed)
+        
+        # 새로운 시퀀스 시그널 연결
+        self.image_clicker_worker.sequence_started.connect(self.on_sequence_started)
+        self.image_clicker_worker.sequence_completed.connect(self.on_sequence_completed)
+        self.image_clicker_worker.sequence_step.connect(self.on_sequence_step)
 
         # 이미지 감지기 시그널 연결
         self.image_detector.image_detected.connect(self.on_image_detected)
@@ -441,6 +505,18 @@ class MainWindow(QMainWindow):
     def on_image_detected(self, message: str):
         """이미지 감지 시 호출"""
         print(f"거탐 이미지 감지: {message}")
+        
+    def on_sequence_started(self):
+        """시퀀스 시작 시 호출"""
+        print("[메인윈도우] 시퀀스 시작됨")
+        
+    def on_sequence_completed(self):
+        """시퀀스 완료 시 호출"""
+        print("[메인윈도우] 시퀀스 완료됨")
+        
+    def on_sequence_step(self, step_info: str):
+        """시퀀스 단계 진행 시 호출"""
+        print(f"[메인윈도우] 시퀀스 진행: {step_info}")
 
     def setup_hotkeys(self):
         """핫키 설정"""
@@ -450,7 +526,8 @@ class MainWindow(QMainWindow):
             buff=self.config.get("hotkey_buff", "f10"),
             monitor=self.config.get("hotkey_monitor", "f11"),
             detector=self.config.get("hotkey_detector", "f12"),
-            image_click=self.config.get("hotkey_image_click", "")
+            image_click=self.config.get("hotkey_image_click", ""),
+            image_detect=self.config.get("hotkey_image_detect", "")
         )
 
         # 핫키 시그널 연결
@@ -459,6 +536,7 @@ class MainWindow(QMainWindow):
         self.hotkey_manager.monitor_toggle.connect(self.toggle_monitoring)
         self.hotkey_manager.detector_toggle.connect(self.toggle_detection)
         self.hotkey_manager.image_click_toggle.connect(self.toggle_image_clicking)
+        self.hotkey_manager.image_detect_toggle.connect(self.toggle_image_detection)
 
         # 핫키 활성화
         self.hotkey_manager.enable_hotkeys()
@@ -483,15 +561,10 @@ class MainWindow(QMainWindow):
     def on_image_click_error(self, error_msg: str):
         """이미지 클릭 오류 발생 시 호출"""
         print(f"이미지 클릭 오류: {error_msg}")
-
+        
     def on_image_release_completed(self):
-        """리치 이미지가 사라진 후 호출"""
-        print("리치 이미지 사라짐 - 재탐지 예정")
-
-        if self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
-            nickname = self.config.get("user_nickname", "유저")
-            message = f"✅ {nickname} 리치 해제 완료"
-            self.image_detector.send_notification(message)
+        """이미지 릴리즈 완료 시 호출"""
+        print("[메인윈도우] 리치 이미지 사라짐 - 시퀀스 준비")
 
     def update_buff_info_labels(self):
         """버프 간격 및 마지막 실행 정보를 UI에 표시"""
@@ -645,37 +718,33 @@ class MainWindow(QMainWindow):
                 self.config.get("user_nickname", "유저")
             )
 
-        # 거탐 이미지 감지 설정 - false_detection_region 사용
-        template_paths = [
-            "images/gt1.png",
-            "images/gt2.png",
-            "images/gt3.png",
-            "images/gt4.png",
-            "images/gt5.png",
-            "images/gt6.png",
-            "images/gt7.png",
-            "images/gt8.png"
+        # 거탐 이미지 감지 설정 - 고정 구역 (30, 52, 1305, 595)
+        gt_region = (30, 52, 1305, 595)
+        gt_images = [
+            "img/gt1.png", "img/gt2.png", "img/gt3.png", "img/gt4.png",
+            "img/gt5.png", "img/gt6.png", "img/gt7.png", "img/gt8.png",
+            "img/gt9.png", "img/gt10.png", "img/gt11.png", "img/gt12.png",
+            "img/gt13.png", "img/gt14.png", "img/gt15.png", "img/gt16.png",
+            "img/gt17.png", "img/gt18.png", "img/gt19.png", "img/gt20.png"
         ]
 
         if self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
-            # false_detection_region이 있으면 사용, 없으면 detection_region 사용
-            detection_region = self.config.get("false_detection_region", self.config.get("detection_region", (0, 0, 100, 100)))
             self.image_detector.set_config(
-                detection_region,
-                template_paths,
+                gt_region,
+                gt_images,
                 self.config.get("telegram_token", ""),
                 self.config.get("telegram_chat_id", ""),
                 self.config.get("user_nickname", "유저"),
                 0.7
             )
 
-        # 이미지 클릭 설정 - surak.png 자동 로드
-        if self.config.get("image_click_region"):
-            self.image_clicker_worker.set_config(
-            self.config.get("image_click_region", (0, 0, 100, 100)),
-            resource_path("images/surak.png"),  # 🔥 리소스 경로로 변환
-            self.config.get("image_click_confidence", 0.8)
-            )
+        # 리치 자동클릭 설정 - 3개의 surak 이미지 모두 사용
+        reach_region = tuple(self.config.get("image_click_region", [665, 420, 1236, 753]))
+        reach_templates = ["img/surak.png", "img/surak2.png", "img/surak3.png"]
+        reach_confidence = self.config.get("image_click_confidence", 0.8)
+        
+        print(f"[설정] 리치 자동클릭: 구역={reach_region}, 템플릿={reach_templates}, 신뢰도={reach_confidence}")
+        self.image_clicker_worker.set_config_multi(reach_region, reach_templates, reach_confidence)
 
     def toggle_monitoring(self):
         """창 감지 토글"""
@@ -927,11 +996,7 @@ class MainWindow(QMainWindow):
         self.update_status()
 
     def toggle_image_clicking(self):
-        """이미지 클릭 토글"""
-        if not self.config.get("image_click_region"):
-            QMessageBox.warning(self, "경고", "이미지 클릭 설정이 완료되지 않았습니다.\n환경설정에서 구역을 설정해주세요.")
-            return
-
+        """이미지 클릭 토글 - 리치와 시퀀스를 함께 제어"""
         if self.is_image_clicking:
             self.image_clicker_worker.stop()
             self.is_image_clicking = False
@@ -1027,7 +1092,7 @@ class MainWindow(QMainWindow):
             self.toggle_buff3()
         if not self.is_detecting and self.config.get("detection_region"):
             self.toggle_detection()
-        if not self.is_image_clicking and self.config.get("image_click_region"):
+        if not self.is_image_clicking:
             self.toggle_image_clicking()
         if not self.is_image_detecting and self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
             self.toggle_image_detection()
@@ -1089,7 +1154,8 @@ class MainWindow(QMainWindow):
                 buff=new_settings.get("hotkey_buff", ""),
                 monitor=new_settings.get("hotkey_monitor", ""),
                 detector=new_settings.get("hotkey_detector", ""),
-                image_click=new_settings.get("hotkey_image_click", "")
+                image_click=new_settings.get("hotkey_image_click", ""),
+                image_detect=new_settings.get("hotkey_image_detect", "")
             )
 
             # 핫키 안내 업데이트
@@ -1159,6 +1225,7 @@ class MainWindow(QMainWindow):
             self.image_clicker_worker.stop()
         if self.is_image_detecting:
             self.image_detector.stop()
+        
 
         # 핫키 비활성화
         self.hotkey_manager.disable_hotkeys()

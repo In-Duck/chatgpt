@@ -8,10 +8,10 @@
     "telegram_chat_id": "6193462893",
     "user_nickname": "유저",
     "detection_region": [
-        751,
-        446,
-        1153,
-        623
+        34,
+        144,
+        261,
+        228
     ],
     "buff1_key": "1",
     "buff1_min_interval": 5.0,
@@ -30,20 +30,20 @@
     "hotkey_monitor": "",
     "hotkey_detector": "",
     "image_click_region": [
-        665,
-        420,
-        1236,
-        753
+        790,
+        498,
+        938,
+        541
     ],
     "image_click_template": "surak.png",
-    "image_click_confidence": 0.9,
+    "image_click_confidence": 0.7,
     "hotkey_image_click": "",
     "geotam_alert_interval": 1,
     "periodic_interval_minutes": 1,
     "false_detection_region": [
-        763,
-        406,
-        1268,
-        730
+        32,
+        54,
+        1301,
+        671
     ]
 }

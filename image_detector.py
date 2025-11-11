@@ -1,24 +1,24 @@
 """
-이미지 감지 및 텔레그램 알림
-특정 이미지가 화면에 나타나면 텔레그램으로 알림을 보냅니다.
+이미지 감지 및 텔레그램 알림 (pyautogui 버전)
+- pyautogui를 사용한 간단한 이미지 인식
+- 전체 이미지가 구역 내에 있어야 감지
+- 감지 시 구역 스크린샷 + 매칭 위치 표시
 """
 import asyncio
 import threading
 import time
-from typing import Optional, Tuple, List, Dict
+import io
+from typing import Optional, Tuple, List
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
-import cv2
-import numpy as np
-from PIL import ImageGrab
+import pyautogui
+from PIL import ImageGrab, Image, ImageDraw
 from telegram import Bot
 from telegram.error import TelegramError
 from utils import resource_path
 
 
-
-
 class ImageDetector(QObject):
-    """이미지 감지 및 텔레그램 알림 클래스"""
+    """이미지 감지 및 텔레그램 알림 클래스 (pyautogui 사용)"""
 
     image_detected = pyqtSignal(str)
 
@@ -26,15 +26,11 @@ class ImageDetector(QObject):
         super().__init__()
         self.is_running = False
         self.detection_region: Optional[Tuple[int, int, int, int]] = None
-        self.template_variants: List[Dict[str, object]] = []
-        self.template_source_count: int = 0
-        self.scale_values = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9,
-                             0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35,
-                             1.4, 1.45, 1.5, 1.55, 1.6, 1.65, 1.7, 1.75, 1.8,
-                             1.85, 1.9, 1.95, 2.0]
-        self.angle_values = [-45, -30, -15, 0, 15, 30, 45]
-        self.confidence_threshold = 0.7
-        self.check_interval = 10000  # 10초
+        
+        # 템플릿 경로 목록
+        self.template_paths: List[str] = []
+        self.confidence_threshold = 0.8
+        self.check_interval = 5000  # 5초
 
         # 텔레그램 설정
         self.telegram_token: Optional[str] = None
@@ -47,6 +43,9 @@ class ImageDetector(QObject):
         # 감지 상태
         self.last_detected = False
         self.detection_count = 0
+        self.last_screenshot: Optional[Image.Image] = None
+        self.last_matched_location: Optional[Tuple[int, int, int, int]] = None
+        self.last_matched_template: Optional[str] = None
 
         # 텔레그램 봇
         self.bot: Optional[Bot] = None
@@ -60,6 +59,7 @@ class ImageDetector(QObject):
         self.repeat_interval = 6000
         self.is_repeating = False
         self.user_responded = False
+        self.screenshot_sent = False
 
     def set_config(
         self,
@@ -68,30 +68,17 @@ class ImageDetector(QObject):
         telegram_token: str,
         telegram_chat_id: str,
         user_nickname: str,
-        confidence: float = 0.7
+        confidence: float = 0.85
     ):
         """설정을 업데이트합니다."""
         self.detection_region = detection_region
+        self.template_paths = template_paths
         self.telegram_token = telegram_token
         self.telegram_chat_id = telegram_chat_id
         self.user_nickname = user_nickname
         self.confidence_threshold = confidence
 
-        self.template_variants = []
-        self.template_source_count = len(template_paths)
-        for path in template_paths:
-            try:
-                template = cv2.imread(resource_path(path))
-                if template is None:
-                    print(f"템플릿 이미지 로드 실패: {path}")
-                    continue
-                template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-                variants = self._generate_template_variants(template_gray, path)
-                if variants:
-                    self.template_variants.extend(variants)
-                    print(f"템플릿 로드 성공 (변형 {len(variants)}개): {path}")
-            except Exception as e:
-                print(f"템플릿 이미지 로드 오류 ({path}): {e}")
+        print(f"이미지 감지 설정: 구역={detection_region}, 템플릿 {len(template_paths)}개, 신뢰도={confidence}")
 
         if self.telegram_token:
             self._init_telegram_bot()
@@ -99,7 +86,6 @@ class ImageDetector(QObject):
     def _init_telegram_bot(self):
         """텔레그램 봇 초기화"""
         try:
-            # 기존 루프가 살아있다면 닫기
             if self.loop and not self.loop.is_closed():
                 self.loop.call_soon_threadsafe(self.loop.stop)
                 time.sleep(0.3)
@@ -123,13 +109,12 @@ class ImageDetector(QObject):
 
     def start(self):
         """이미지 감지 시작"""
-        if self.is_running or not self.detection_region or not self.template_variants:
+        if self.is_running or not self.detection_region or not self.template_paths:
             return
         if not self.telegram_token or not self.telegram_chat_id:
             print("텔레그램 설정이 없습니다.")
             return
 
-        # 항상 새로운 봇 루프 보장
         self._init_telegram_bot()
 
         self.is_running = True
@@ -137,10 +122,9 @@ class ImageDetector(QObject):
         self.detection_count = 0
         self.is_repeating = False
         self.user_responded = False
+        self.screenshot_sent = False
 
-        print(
-            f"이미지 감지 시작: 구역={self.detection_region}, 원본 템플릿 {self.template_source_count}개, 변형 템플릿 {len(self.template_variants)}개"
-        )
+        print(f"이미지 감지 시작: 구역={self.detection_region}, 템플릿 {len(self.template_paths)}개")
 
         self.check_timer = QTimer()
         self.check_timer.timeout.connect(self._check_image)
@@ -152,14 +136,12 @@ class ImageDetector(QObject):
         print("이미지 감지 중지 시작...")
         self.is_running = False
 
-        # 타이머 정리
         for timer in [self.check_timer, self.repeat_timer]:
             if timer:
                 timer.stop()
         self.check_timer = None
         self.repeat_timer = None
 
-        # 텔레그램 루프 정리
         try:
             if self.loop:
                 if self.loop.is_running():
@@ -178,37 +160,70 @@ class ImageDetector(QObject):
         print("이미지 감지 중지 완료")
 
     def _check_image(self):
-        """이미지 감지 수행"""
+        """이미지 감지 수행 - 전체 이미지가 구역 내에 있어야 함"""
         if not self.is_running:
             return
+            
         try:
             x1, y1, x2, y2 = self.detection_region
-            screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
-            screenshot_np = np.array(screenshot)
-            screenshot_gray = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2GRAY)
-
+            region_width = x2 - x1
+            region_height = y2 - y1
+            
+            # 모든 템플릿에 대해 검색
             detected = False
-            for variant in self.template_variants:
-                template = variant["image"]
-                th, tw = template.shape[:2]
-                sh, sw = screenshot_gray.shape[:2]
-                if th > sh or tw > sw:
-                    continue
-                res = cv2.matchTemplate(screenshot_gray, template, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, _ = cv2.minMaxLoc(res)
-                if max_val >= self.confidence_threshold:
-                    detected = True
-                    print(
-                        f"이미지 감지! 신뢰도: {max_val:.2f} (스케일 {variant['scale']:.2f}, 회전 {variant['angle']}°, 원본 {variant['source']})"
+            best_box = None
+            best_template = None
+
+            for template_path in self.template_paths:
+                try:
+                    template_full_path = resource_path(template_path)
+                    
+                    # 템플릿 이미지 로드하여 크기 확인
+                    template_img = Image.open(template_full_path)
+                    template_width, template_height = template_img.size
+                    
+                    # pyautogui로 이미지 찾기 (구역 내에서만 검색)
+                    location = pyautogui.locateOnScreen(
+                        template_full_path,
+                        confidence=self.confidence_threshold,
+                        region=(x1, y1, region_width, region_height)
                     )
-                    break
+
+                    if location:
+                        # location은 (left, top, width, height) 형식
+                        left, top, width, height = location
+                        right = left + width
+                        bottom = top + height
+                        
+                        # 전체 이미지가 구역 내에 있는지 확인
+                        if left >= x1 and top >= y1 and right <= x2 and bottom <= y2:
+                            detected = True
+                            best_box = (left, top, right, bottom)
+                            best_template = template_path
+                            print(f"✓ 전체 이미지 감지: {template_path} at ({left}, {top}, {right}, {bottom})")
+                            break  # 첫 번째 매칭 발견 시 중단
+                        else:
+                            print(f"✗ 부분 이미지 감지 (무시): {template_path} - 구역 밖으로 벗어남")
+
+                except Exception as e:
+                    print(f"템플릿 {template_path} 검색 오류: {e}")
+                    continue
 
             if detected and not self.last_detected:
                 self.detection_count += 1
                 self.last_detected = True
                 self.is_repeating = True
                 self.repeat_count = 0
-                self._send_repeat_message()
+                self.screenshot_sent = False
+                self.last_matched_location = best_box
+                self.last_matched_template = best_template
+
+                left, top, right, bottom = best_box
+                print(f"이미지 감지! 위치: ({left}, {top}, {right}, {bottom}), 템플릿: {best_template}")
+
+                # 구역 스크린샷 캡처 및 매칭 위치 표시하여 전송
+                self._send_first_detection(best_box, best_template)
+
                 if self.repeat_timer:
                     self.repeat_timer.stop()
                 self.repeat_timer = QTimer()
@@ -229,56 +244,57 @@ class ImageDetector(QObject):
         except Exception as e:
             print(f"이미지 체크 오류: {e}")
 
-    def _generate_template_variants(self, template_gray, source_path):
-        variants = []
-        for scale in self.scale_values:
+    def _send_first_detection(self, match_box: Tuple[int, int, int, int], template_name: str):
+        """첫 감지 시 구역 스크린샷 + 매칭 위치 표시하여 전송"""
+        if not self.screenshot_sent:
             try:
-                resized = cv2.resize(
-                    template_gray,
-                    dsize=None,
-                    fx=scale,
-                    fy=scale,
-                    interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR,
+                x1, y1, x2, y2 = self.detection_region
+                left, top, right, bottom = match_box
+                
+                # 구역 전체 스크린샷 캡처
+                screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+                
+                # 매칭된 위치에 빨간 테두리 그리기
+                draw = ImageDraw.Draw(screenshot)
+                # 좌표를 구역 기준으로 변환
+                box_left = left - x1
+                box_top = top - y1
+                box_right = right - x1
+                box_bottom = bottom - y1
+                
+                # 빨간 테두리 (두께 3픽셀)
+                for i in range(3):
+                    draw.rectangle(
+                        [box_left - i, box_top - i, box_right + i, box_bottom + i],
+                        outline='red',
+                        width=1
+                    )
+                
+                msg = (
+                    f"🚨 {self.user_nickname} 거탐 감지됨 (1/{self.max_repeat_count})\n"
+                    f"매칭 위치: ({left}, {top}, {right}, {bottom})\n"
+                    f"매칭 템플릿: {template_name}\n"
+                    f"감지 구역: ({x1}, {y1}, {x2}, {y2})"
                 )
-            except cv2.error:
-                continue
-            if resized.shape[0] < 5 or resized.shape[1] < 5:
-                continue
-            for angle in self.angle_values:
-                if angle == 0:
-                    rotated = resized.copy()
-                else:
-                    rotated = self._rotate_image(resized, angle)
-                if rotated.shape[0] < 5 or rotated.shape[1] < 5:
-                    continue
-                variants.append(
-                    {"image": rotated, "scale": scale, "angle": angle, "source": source_path}
-                )
-        return variants
-
-    def _rotate_image(self, image, angle):
-        h, w = image.shape[:2]
-        center = (w / 2.0, h / 2.0)
-        m = cv2.getRotationMatrix2D(center, angle, 1.0)
-        cos = abs(m[0, 0])
-        sin = abs(m[0, 1])
-        new_w = int((h * sin) + (w * cos))
-        new_h = int((h * cos) + (w * sin))
-        m[0, 2] += (new_w / 2) - center[0]
-        m[1, 2] += (new_h / 2) - center[1]
-        return cv2.warpAffine(
-            image, m, (new_w, new_h),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
-        )
+                self._send_telegram_photo(screenshot, msg)
+                self.screenshot_sent = True
+                self.repeat_count = 1
+                print(f"첫 감지 메시지 + 스크린샷 전송 (매칭 위치 표시)")
+            except Exception as e:
+                print(f"스크린샷 전송 오류: {e}")
+                msg = f"🚨 {self.user_nickname} 거탐 감지됨 (1/{self.max_repeat_count})"
+                self._send_telegram_message(msg)
+                self.screenshot_sent = True
+                self.repeat_count = 1
 
     def _send_repeat_message(self):
+        """반복 메시지 전송"""
         if not self.is_repeating or self.user_responded:
             if self.repeat_timer:
                 self.repeat_timer.stop()
                 self.repeat_timer = None
             return
+            
         self.repeat_count += 1
         if self.repeat_count > self.max_repeat_count:
             self.is_repeating = False
@@ -286,12 +302,13 @@ class ImageDetector(QObject):
                 self.repeat_timer.stop()
                 self.repeat_timer = None
             return
+            
         msg = f"🚨 {self.user_nickname} 거탐 감지됨 ({self.repeat_count}/{self.max_repeat_count})"
         self._send_telegram_message(msg)
         print(f"반복 메시지 전송: {self.repeat_count}/{self.max_repeat_count}")
 
     def _send_telegram_message(self, message: str):
-        """텔레그램으로 메시지 전송"""
+        """텔레그램으로 텍스트 메시지 전송"""
         if not self.bot or not self.loop or not self.telegram_chat_id:
             self._init_telegram_bot()
 
@@ -305,6 +322,22 @@ class ImageDetector(QObject):
             )
         except Exception as e:
             print(f"메시지 전송 실패: {e}")
+
+    def _send_telegram_photo(self, image: Image.Image, caption: str):
+        """텔레그램으로 사진 전송"""
+        if not self.bot or not self.loop or not self.telegram_chat_id:
+            self._init_telegram_bot()
+
+        try:
+            if not self.loop.is_running():
+                raise RuntimeError("이벤트 루프가 실행 중이 아님")
+
+            asyncio.run_coroutine_threadsafe(
+                self._async_send_photo(image, caption),
+                self.loop
+            )
+        except Exception as e:
+            print(f"사진 전송 실패: {e}")
     
     def send_notification(self, message: str):
         """외부에서 호출할 수 있는 텔레그램 알림 전송 함수"""
@@ -312,7 +345,6 @@ class ImageDetector(QObject):
             print("텔레그램 설정이 없어 메시지를 보낼 수 없습니다.")
             return
 
-        # 텔레그램 봇이 아직 초기화되지 않았거나 닫혀 있으면 다시 초기화
         if not self.bot or not self.loop or (self.loop and self.loop.is_closed()):
             self._init_telegram_bot()
 
@@ -321,8 +353,8 @@ class ImageDetector(QObject):
         except Exception as e:
             print(f"텔레그램 알림 전송 실패: {e}")
 
-
     async def _async_send_message(self, message: str):
+        """비동기 메시지 전송"""
         try:
             await self.bot.send_message(chat_id=self.telegram_chat_id, text=message)
             print(f"텔레그램 메시지 전송 성공: {message}")
@@ -330,3 +362,21 @@ class ImageDetector(QObject):
             print(f"텔레그램 오류: {e}")
         except Exception as e:
             print(f"전송 오류: {e}")
+
+    async def _async_send_photo(self, image: Image.Image, caption: str):
+        """비동기 사진 전송"""
+        try:
+            bio = io.BytesIO()
+            image.save(bio, format='PNG')
+            bio.seek(0)
+            
+            await self.bot.send_photo(
+                chat_id=self.telegram_chat_id,
+                photo=bio,
+                caption=caption
+            )
+            print(f"텔레그램 사진 전송 성공: {caption}")
+        except TelegramError as e:
+            print(f"텔레그램 오류: {e}")
+        except Exception as e:
+            print(f"사진 전송 오류: {e}")

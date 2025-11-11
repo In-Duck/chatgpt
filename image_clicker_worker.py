@@ -1,247 +1,345 @@
+"""
+이미지 기반 자동 클릭 워커 (pyautogui 버전)
+- pyautogui를 사용한 간단한 이미지 인식 및 클릭
+- 전체 이미지가 구역 내에 있어야 감지
+- 3개의 surak 이미지 중 하나라도 감지되면 즉시 클릭 후 시퀀스 실행
+"""
 import time
-from typing import Optional, Tuple
-from pathlib import Path
-from utils import resource_path
-import cv2
-import numpy as np
-import pyautogui
-from PIL import ImageGrab
+from typing import Optional, Tuple, List
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+import pyautogui
+from PIL import Image
+from utils import resource_path
 
 
 class ImageClickerWorker(QObject):
-    """특정 이미지를 감지하고 클릭하는 클래스"""
+    """이미지를 찾아 자동으로 클릭하는 워커 (pyautogui 사용)"""
 
-    image_found = pyqtSignal(int, int)
-    image_clicked = pyqtSignal(int, int)
-    image_not_found = pyqtSignal()
-    release_completed = pyqtSignal()
-    error_occurred = pyqtSignal(str)
+    image_clicked = pyqtSignal(int, int)  # 클릭 성공 (x, y)
+    error_occurred = pyqtSignal(str)  # 오류 발생
+    release_completed = pyqtSignal()  # 이미지 사라짐
+    sequence_started = pyqtSignal()  # 시퀀스 시작
+    sequence_completed = pyqtSignal()  # 시퀀스 완료
+    sequence_step = pyqtSignal(str)  # 시퀀스 단계 알림
 
     def __init__(self):
         super().__init__()
         self.is_running = False
+        self.search_region: Optional[Tuple[int, int, int, int]] = None
+        self.template_paths: List[str] = []  # 여러 템플릿 지원
+        self.confidence: float = 0.7
+        self.click_interval = 3000  # 3초마다 클릭
 
-        # 주기적 탐색 타이머
-        self.timer = QTimer()
-        self.timer.timeout.connect(self._search_phase)
-        self.timer.setSingleShot(True)
+        # 타이머
+        self.click_timer: Optional[QTimer] = None
+        self.sequence_timer: Optional[QTimer] = None
 
-        # 클릭 상태 타이머
-        self.active_click_timer = QTimer()
-        self.active_click_timer.timeout.connect(self._active_click_phase)
-        self.active_click_timer.setSingleShot(True)
+        # 상태
+        self.image_found = False
+        self.last_location: Optional[Tuple[int, int, int, int]] = None
+        self.current_template: Optional[str] = None
+        self.sequence_triggered = False  # 시퀀스가 이미 트리거되었는지 추적
+        
+        # 시퀀스 관련
+        self.is_sequence_running = False
+        self.sequence_step_index = 0
+        self.sequence_wait_time = 0
+        
+        # 창인식 영역 (고정: 20, 20, 1296, 759)
+        self.window_region = (20, 20, 1296, 759)
 
-        # 인터벌 설정
-        self.check_interval = 10000  # 10초 간격 탐색
-        self.active_click_interval = 500  # 0.5초 간격 클릭
-
-        # 설정값
-        self.region: Optional[Tuple[int, int, int, int]] = None
-        self.template_path: Optional[str] = None
-        self.template_image: Optional[np.ndarray] = None
-        self.confidence_threshold: float = 0.8
-
-        # 통계
-        self.total_searches = 0
-        self.total_clicks = 0
-        self.last_click_time: Optional[float] = None
-
-        # 상태 플래그
-        self._in_active_click = False
-
-        # 스케일 보정 (다른 크기도 인식)
-        self.scale_values = [
-            0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9,
-            0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35,
-            1.4, 1.45, 1.5, 1.55, 1.6, 1.65, 1.7, 1.75, 1.8,
-            1.85, 1.9, 1.95, 2.0
-        ]
-
-    # ------------------------------
-    # 설정
-    # ------------------------------
     def set_config(
         self,
-        region: Tuple[int, int, int, int],
+        search_region: Tuple[int, int, int, int],
         template_path: str,
-        confidence_threshold: float = 0.8
+        confidence: float = 0.7
     ):
-        """탐색 영역 및 템플릿 이미지 설정"""
-        self.region = region
-        self.template_path = template_path
-        self.confidence_threshold = confidence_threshold
+        """단일 템플릿 설정 (기존 호환성 유지)"""
+        self.search_region = search_region
+        self.template_paths = [template_path]
+        self.confidence = confidence
+        print(f"이미지 클릭 설정: 구역={search_region}, 템플릿={template_path}, 신뢰도={confidence}")
 
-        if template_path and Path(template_path).exists():
-            try:
-                full_path = resource_path(template_path)
-                template_bgr = cv2.imread(full_path, cv2.IMREAD_COLOR)
-                if template_bgr is None:
-                    self.error_occurred.emit(f"이미지를 로드할 수 없습니다: {template_path}")
-                    self.template_image = None
-                else:
-                    self.template_image = cv2.cvtColor(template_bgr, cv2.COLOR_BGR2GRAY)
-                    print(f"템플릿 이미지 로드 성공 (흑백 변환): {template_path}")
-            except Exception as e:
-                self.error_occurred.emit(f"이미지 로드 중 오류: {e}")
-                self.template_image = None
-        else:
-            self.template_image = None
+    def set_config_multi(
+        self,
+        search_region: Tuple[int, int, int, int],
+        template_paths: List[str],
+        confidence: float = 0.7
+    ):
+        """다중 템플릿 설정 (3개의 surak 이미지 지원)"""
+        self.search_region = search_region
+        self.template_paths = template_paths
+        self.confidence = confidence
+        print(f"이미지 클릭 설정: 구역={search_region}, 템플릿={len(template_paths)}개, 신뢰도={confidence}")
 
-    # ------------------------------
-    # 시작 / 중지
-    # ------------------------------
     def start(self):
-        """탐색 시작"""
-        if self.is_running or not self.region or self.template_image is None:
-            if self.template_image is None:
-                self.error_occurred.emit("탐색할 이미지가 설정되지 않았습니다.")
+        """이미지 검색 및 클릭 시작"""
+        if self.is_running or not self.search_region or not self.template_paths:
             return
 
         self.is_running = True
-        self.total_searches = 0
-        self.total_clicks = 0
-        self.last_click_time = None
-        self._in_active_click = False
+        self.image_found = False
+        self.last_location = None
+        self.current_template = None
+        self.is_sequence_running = False
+        self.sequence_triggered = False
 
-        print("이미지 자동 클릭 시작")
-        self._schedule_next_search(0)
+        print(f"이미지 클릭 시작: 구역={self.search_region}, 템플릿 {len(self.template_paths)}개, 신뢰도={self.confidence}")
+
+        # 3초마다 이미지 검색 및 클릭
+        self.click_timer = QTimer()
+        self.click_timer.timeout.connect(self._search_and_click)
+        self.click_timer.start(self.click_interval)
+        self._search_and_click()
 
     def stop(self):
-        """탐색 중지"""
+        """이미지 검색 중지"""
+        print("이미지 클릭 중지")
         self.is_running = False
-        try:
-            self.timer.stop()
-            self.active_click_timer.stop()
-        except Exception:
-            pass
-        self._in_active_click = False
-        print("이미지 자동 클릭 중지됨")
+        self.image_found = False
+        self.last_location = None
+        self.current_template = None
+        self.is_sequence_running = False
+        self.sequence_triggered = False
 
-    # ------------------------------
-    # 탐색 및 클릭 로직
-    # ------------------------------
-    def _schedule_next_search(self, delay_ms: int):
-        if not self.is_running or self._in_active_click:
-            return
-        try:
-            self.timer.stop()
-            self.timer.start(delay_ms)
-        except Exception:
-            pass
+        if self.click_timer:
+            self.click_timer.stop()
+            self.click_timer = None
+            
+        if self.sequence_timer:
+            self.sequence_timer.stop()
+            self.sequence_timer = None
 
-    def _search_phase(self):
-        """주기적으로 이미지 탐색"""
-        if not self.is_running or not self.region or self.template_image is None:
+    def _search_and_click(self):
+        """이미지를 찾아 클릭 - 전체 이미지가 구역 내에 있어야 함"""
+        if not self.is_running or self.is_sequence_running:
             return
+
         try:
-            self.total_searches += 1
-            found, center = self._locate_image_scaled()
-            if found and center:
-                self._start_active_click(center)
-            else:
-                self.image_not_found.emit()
-                self._schedule_next_search(self.check_interval)
+            x1, y1, x2, y2 = self.search_region
+            region_width = x2 - x1
+            region_height = y2 - y1
+            
+            # 모든 템플릿에 대해 검색
+            found = False
+            found_template_name = None
+            
+            for idx, template_path in enumerate(self.template_paths):
+                template_full_path = resource_path(template_path)
+                
+                # 템플릿 이미지 로드하여 크기 확인
+                template_img = Image.open(template_full_path)
+                template_width, template_height = template_img.size
+
+                # pyautogui로 이미지 찾기 (구역 지정)
+                location = pyautogui.locateOnScreen(
+                    template_full_path,
+                    confidence=self.confidence,
+                    region=(x1, y1, region_width, region_height)
+                )
+
+                if location:
+                    # location은 (left, top, width, height) 형식
+                    left, top, width, height = location
+                    right = left + width
+                    bottom = top + height
+                    
+                    # 전체 이미지가 구역 내에 있는지 확인
+                    if left >= x1 and top >= y1 and right <= x2 and bottom <= y2:
+                        # 중심점 계산
+                        x = left + width // 2
+                        y = top + height // 2
+                        
+                        # 이미지 발견 상태 업데이트
+                        was_found = self.image_found
+                        self.image_found = True
+                        self.last_location = (left, top, right, bottom)
+                        self.current_template = template_path
+                        found = True
+                        found_template_name = f"surak{idx+1 if idx > 0 else ''}.png"
+                        
+                        if not was_found:
+                            print(f"✓ [FOUND #{idx+1}] 이미지 발견: {template_path} at ({left}, {top}, {right}, {bottom}) 중심=({x}, {y})")
+                            print(f"→ 찾은 이미지: {found_template_name}")
+                            print(f"→ 즉시 클릭 후 시퀀스 시작")
+                        
+                        # 클릭 수행 (단일 클릭)
+                        pyautogui.moveTo(x, y, duration=0.1)
+                        pyautogui.click()
+                        
+                        self.image_clicked.emit(x, y)
+                        
+                        # 시퀀스가 아직 트리거되지 않았다면 즉시 시작
+                        if not self.sequence_triggered:
+                            print(f"[TRIGGER] surak 이미지 감지 → 즉시 시퀀스 시작")
+                            self.sequence_triggered = True
+                            self.release_completed.emit()
+                            self._start_sequence()
+                        
+                        break  # 첫 번째 매칭된 이미지만 처리
+                    else:
+                        # 부분 이미지는 무시
+                        if self.image_found and self.current_template == template_path:
+                            print(f"✗ [PARTIAL] 부분 이미지 감지 (무시): {template_path} ({left}, {top}, {right}, {bottom}) - 구역 밖으로 벗어남")
+
+            # 모든 템플릿에서 이미지를 찾지 못함
+            if not found:
+                if self.image_found:
+                    print(f"[RELEASE] 이미지 사라짐 확인 ({self.current_template})")
+                    self.image_found = False
+                    self.last_location = None
+                    self.current_template = None
+                    # 시퀀스는 이미 시작되었으므로 여기서는 아무것도 하지 않음
+
         except Exception as e:
-            self.error_occurred.emit(f"이미지 탐색 중 오류: {e}")
-            self._schedule_next_search(self.check_interval)
+            error_msg = f"이미지 검색 오류: {e}"
+            print(f"[ERROR] {error_msg}")
+            self.error_occurred.emit(error_msg)
 
-    def _start_active_click(self, center):
-        """이미지 발견 시 클릭 시작"""
-        if not self.is_running:
+    def _start_sequence(self):
+        """시퀀스 실행 시작"""
+        if self.is_sequence_running:
             return
-        self.timer.stop()
-        self._in_active_click = True
-        self.active_click_timer.start(0)
+            
+        self.is_sequence_running = True
+        self.sequence_step_index = 0
+        print("\n" + "="*60)
+        print("시퀀스 시작: malon → hunt → filter → malon → 대기(3분) → malon → filter → malon")
+        print("="*60 + "\n")
+        self.sequence_started.emit()
+        
+        # 시퀀스 타이머 시작
+        self.sequence_timer = QTimer()
+        self.sequence_timer.timeout.connect(self._execute_sequence_step)
+        self.sequence_timer.start(100)  # 100ms마다 체크
 
-    def _active_click_phase(self):
-        """0.5초마다 클릭"""
-        if not self.is_running or not self._in_active_click or not self.region or self.template_image is None:
+    def _execute_sequence_step(self):
+        """시퀀스 단계별 실행"""
+        if not self.is_running or not self.is_sequence_running:
+            if self.sequence_timer:
+                self.sequence_timer.stop()
+                self.sequence_timer = None
             return
+
         try:
-            found, center = self._locate_image_scaled()
-            if found and center:
-                x, y = center
-                self.image_found.emit(x, y)
-                pyautogui.click(x, y)
-                self.total_clicks += 1
-                self.last_click_time = time.time()
-                self.image_clicked.emit(x, y)
-                print(f"이미지 클릭 ({self.total_clicks}회)")
-                self.active_click_timer.start(self.active_click_interval)
+            # 시퀀스 정의: (이미지, 클릭타입, 대기시간)
+            # 클릭타입: "double" or "single"
+            # 대기시간: 다음 단계까지 대기 (초)
+            sequence_steps = [
+                ("img/malon.png", "double", 0.5),    # Step 1: malon 더블클릭
+                ("img/hunt.png", "single", 0.5),     # Step 2: hunt 클릭
+                ("img/filter.png", "single", 0.5),   # Step 3: filter 클릭
+                ("img/malon.png", "double", 180.0),  # Step 4: malon 더블클릭 → 3분 대기
+                ("img/malon.png", "double", 0.5),    # Step 5: malon 더블클릭
+                ("img/filter.png", "single", 0.5),   # Step 6: filter 클릭
+                ("img/malon.png", "double", 0.5),    # Step 7: malon 더블클릭
+            ]
+            
+            if self.sequence_step_index >= len(sequence_steps):
+                # 시퀀스 완료
+                print("\n" + "="*60)
+                print("시퀀스 완료!")
+                print("="*60 + "\n")
+                self.is_sequence_running = False
+                self.sequence_triggered = False  # 다음 감지를 위해 리셋
+                if self.sequence_timer:
+                    self.sequence_timer.stop()
+                    self.sequence_timer = None
+                self.sequence_completed.emit()
+                return
+            
+            # 대기 시간 처리
+            if self.sequence_wait_time > 0:
+                self.sequence_wait_time -= 0.1
+                if self.sequence_wait_time > 0:
+                    return  # 아직 대기 중
+                else:
+                    self.sequence_wait_time = 0
+                    self.sequence_step_index += 1
+                    if self.sequence_step_index >= len(sequence_steps):
+                        self._execute_sequence_step()  # 재귀 호출로 완료 처리
+                    return
+            
+            # 현재 단계 실행
+            image_path, click_type, wait_time = sequence_steps[self.sequence_step_index]
+            
+            step_name = f"Step {self.sequence_step_index + 1}/{len(sequence_steps)}"
+            print(f"\n[{step_name}] 실행 중: {image_path} ({click_type} click)")
+            
+            # 창인식 영역에서 이미지 찾기
+            result = self._find_and_click_in_window(image_path, click_type)
+            
+            if result:
+                x, y = result
+                print(f"[{step_name}] ✓ 성공: ({x}, {y}) 클릭 완료")
+                
+                # 다음 단계로 이동 준비
+                if wait_time > 1.0:
+                    print(f"[{step_name}] → {wait_time}초 대기 시작...")
+                    self.sequence_step.emit(f"{step_name}: {image_path} 클릭 완료, {wait_time}초 대기")
+                else:
+                    self.sequence_step.emit(f"{step_name}: {image_path} 클릭 완료")
+                
+                self.sequence_wait_time = wait_time
             else:
-                # 이미지가 사라졌으면 클릭 종료 후 다시 탐색 시작
-                self._finish_active_click()
+                print(f"[{step_name}] ✗ 실패: {image_path} 이미지를 찾을 수 없음 (재시도 중...)")
+                # 실패 시 0.5초 후 재시도
+                self.sequence_wait_time = 0.5
+                
         except Exception as e:
-            self.error_occurred.emit(f"반복 클릭 중 오류: {e}")
-            self._finish_active_click()
+            error_msg = f"시퀀스 실행 오류: {e}"
+            print(f"[ERROR] {error_msg}")
+            self.error_occurred.emit(error_msg)
+            self.is_sequence_running = False
+            self.sequence_triggered = False
+            if self.sequence_timer:
+                self.sequence_timer.stop()
+                self.sequence_timer = None
 
-    def _finish_active_click(self):
-        """클릭 루프 종료 후 즉시 탐색 재시작"""
-        if not self._in_active_click:
-            return
+    def _find_and_click_in_window(self, image_path: str, click_type: str) -> Optional[Tuple[int, int]]:
+        """창인식 영역에서 이미지를 찾아 클릭"""
         try:
-            self.active_click_timer.stop()
-        except Exception:
-            pass
-        self._in_active_click = False
-        self.release_completed.emit()
-        print("이미지 사라짐 → 탐색 재개")
-        if self.is_running:
-            self._schedule_next_search(0)
+            x1, y1, x2, y2 = self.window_region
+            region_width = x2 - x1
+            region_height = y2 - y1
+            
+            template_full_path = resource_path(image_path)
+            
+            # pyautogui로 이미지 찾기
+            location = pyautogui.locateOnScreen(
+                template_full_path,
+                confidence=self.confidence,
+                region=(x1, y1, region_width, region_height)
+            )
+            
+            if location:
+                left, top, width, height = location
+                right = left + width
+                bottom = top + height
+                
+                # 전체 이미지가 구역 내에 있는지 확인
+                if left >= x1 and top >= y1 and right <= x2 and bottom <= y2:
+                    # 중심점 계산
+                    x = left + width // 2
+                    y = top + height // 2
+                    
+                    # 클릭 수행
+                    pyautogui.moveTo(x, y, duration=0.1)
+                    
+                    if click_type == "double":
+                        pyautogui.doubleClick()
+                    else:
+                        pyautogui.click()
+                    
+                    return (x, y)
+            
+            return None
+            
+        except Exception as e:
+            print(f"이미지 찾기 오류: {e}")
+            return None
 
-    # ------------------------------
-    # 이미지 탐색
-    # ------------------------------
-    def _locate_image_scaled(self):
-        """여러 스케일로 이미지 매칭 (크기 달라도 인식)"""
-        if not self.region or self.template_image is None:
-            return False, None
-
-        x1, y1, x2, y2 = self.region
-        screenshot = ImageGrab.grab(bbox=(x1, y1, x2, y2))
-        screenshot_np = np.array(screenshot, dtype=np.uint8)
-        screenshot_bgr = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
-        screenshot_gray = cv2.cvtColor(screenshot_bgr, cv2.COLOR_BGR2GRAY)
-
-        del screenshot, screenshot_np, screenshot_bgr
-
-        best_val = 0
-        best_loc = None
-        best_scale = 1.0
-        template_h, template_w = self.template_image.shape[:2]
-
-        for scale in self.scale_values:
-            try:
-                resized = cv2.resize(self.template_image, (int(template_w * scale), int(template_h * scale)))
-            except cv2.error:
-                continue
-            if resized.shape[0] < 5 or resized.shape[1] < 5:
-                continue
-            result = cv2.matchTemplate(screenshot_gray, resized, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(result)
-            if max_val > best_val:
-                best_val = max_val
-                best_loc = max_loc
-                best_scale = scale
-
-        del screenshot_gray
-
-        if best_val >= self.confidence_threshold and best_loc is not None:
-            resized_h = int(template_h * best_scale)
-            resized_w = int(template_w * best_scale)
-            cx = best_loc[0] + resized_w // 2
-            cy = best_loc[1] + resized_h // 2
-            print(f"이미지 감지: 신뢰도 {best_val:.2f}, 스케일 {best_scale:.2f}")
-            return True, (x1 + cx, y1 + cy)
-        return False, None
-
-    # ------------------------------
-    # 통계
-    # ------------------------------
-    def get_stats(self) -> dict:
-        return {
-            "total_searches": self.total_searches,
-            "total_clicks": self.total_clicks,
-            "last_click_time": self.last_click_time
-        }
+    def on_image_release_completed(self):
+        """외부에서 호출 가능한 릴리즈 완료 핸들러"""
+        if not self.is_sequence_running and not self.sequence_triggered:
+            self._start_sequence()
