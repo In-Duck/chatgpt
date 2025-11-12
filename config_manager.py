@@ -21,7 +21,9 @@ class ConfigManager:
             "image_click_region": (0, 0, 100, 100),
             "image_click_template": "",
             "image_click_confidence": 0.8,
-            "hotkey_image_click": ""
+            "hotkey_image_click": "",
+            "window_x": None,
+            "window_y": None
         }
     
     def load_config(self) -> Dict[str, Any]:

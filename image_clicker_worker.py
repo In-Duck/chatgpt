@@ -2,7 +2,7 @@
 이미지 기반 자동 클릭 워커 (pyautogui 버전)
 - pyautogui를 사용한 간단한 이미지 인식 및 클릭
 - 전체 이미지가 구역 내에 있어야 감지
-- 3개의 surak 이미지 중 하나라도 감지되면 즉시 클릭 후 시퀀스 실행
+- 조건부 시퀀스 실행: surak → hunt → filter 순차 처리
 """
 import time
 from typing import Optional, Tuple, List
@@ -21,6 +21,8 @@ class ImageClickerWorker(QObject):
     sequence_started = pyqtSignal()  # 시퀀스 시작
     sequence_completed = pyqtSignal()  # 시퀀스 완료
     sequence_step = pyqtSignal(str)  # 시퀀스 단계 알림
+    phase5_completed = pyqtSignal()  # Phase 5 완료 (리치해제 완료)
+    phase6_progress = pyqtSignal(int, int)  # Phase 6 진행 상황 (경과 시간, 전체 시간)
 
     def __init__(self):
         super().__init__()
@@ -28,7 +30,8 @@ class ImageClickerWorker(QObject):
         self.search_region: Optional[Tuple[int, int, int, int]] = None
         self.template_paths: List[str] = []  # 여러 템플릿 지원
         self.confidence: float = 0.7
-        self.click_interval = 3000  # 3초마다 클릭
+        self.click_interval = 3000  # 3초마다 surak 검색
+        self.action_interval = 500  # 0.5초 간격으로 액션
 
         # 타이머
         self.click_timer: Optional[QTimer] = None
@@ -38,12 +41,12 @@ class ImageClickerWorker(QObject):
         self.image_found = False
         self.last_location: Optional[Tuple[int, int, int, int]] = None
         self.current_template: Optional[str] = None
-        self.sequence_triggered = False  # 시퀀스가 이미 트리거되었는지 추적
         
         # 시퀀스 관련
         self.is_sequence_running = False
-        self.sequence_step_index = 0
-        self.sequence_wait_time = 0
+        self.sequence_phase = 0  # 시퀀스 단계
+        self.wait_counter = 0  # 대기 카운터
+        self.phase6_start_time = 0  # Phase 6 시작 시간
         
         # 창인식 영역 (고정: 20, 20, 1296, 759)
         self.window_region = (20, 20, 1296, 759)
@@ -82,15 +85,16 @@ class ImageClickerWorker(QObject):
         self.last_location = None
         self.current_template = None
         self.is_sequence_running = False
-        self.sequence_triggered = False
+        self.sequence_phase = 0
+        self.phase6_start_time = 0
 
         print(f"이미지 클릭 시작: 구역={self.search_region}, 템플릿 {len(self.template_paths)}개, 신뢰도={self.confidence}")
 
-        # 3초마다 이미지 검색 및 클릭
+        # 3초마다 surak 이미지 검색
         self.click_timer = QTimer()
-        self.click_timer.timeout.connect(self._search_and_click)
+        self.click_timer.timeout.connect(self._search_surak)
         self.click_timer.start(self.click_interval)
-        self._search_and_click()
+        self._search_surak()
 
     def stop(self):
         """이미지 검색 중지"""
@@ -100,7 +104,8 @@ class ImageClickerWorker(QObject):
         self.last_location = None
         self.current_template = None
         self.is_sequence_running = False
-        self.sequence_triggered = False
+        self.sequence_phase = 0
+        self.phase6_start_time = 0
 
         if self.click_timer:
             self.click_timer.stop()
@@ -110,8 +115,8 @@ class ImageClickerWorker(QObject):
             self.sequence_timer.stop()
             self.sequence_timer = None
 
-    def _search_and_click(self):
-        """이미지를 찾아 클릭 - 전체 이미지가 구역 내에 있어야 함"""
+    def _search_surak(self):
+        """surak 이미지 검색 (3초 간격)"""
         if not self.is_running or self.is_sequence_running:
             return
 
@@ -120,18 +125,13 @@ class ImageClickerWorker(QObject):
             region_width = x2 - x1
             region_height = y2 - y1
             
-            # 모든 템플릿에 대해 검색
+            # 모든 surak 템플릿에 대해 검색
             found = False
-            found_template_name = None
             
             for idx, template_path in enumerate(self.template_paths):
                 template_full_path = resource_path(template_path)
-                
-                # 템플릿 이미지 로드하여 크기 확인
                 template_img = Image.open(template_full_path)
-                template_width, template_height = template_img.size
 
-                # pyautogui로 이미지 찾기 (구역 지정)
                 location = pyautogui.locateOnScreen(
                     template_full_path,
                     confidence=self.confidence,
@@ -139,81 +139,55 @@ class ImageClickerWorker(QObject):
                 )
 
                 if location:
-                    # location은 (left, top, width, height) 형식
                     left, top, width, height = location
                     right = left + width
                     bottom = top + height
                     
                     # 전체 이미지가 구역 내에 있는지 확인
                     if left >= x1 and top >= y1 and right <= x2 and bottom <= y2:
-                        # 중심점 계산
-                        x = left + width // 2
-                        y = top + height // 2
-                        
-                        # 이미지 발견 상태 업데이트
-                        was_found = self.image_found
+                        found = True
                         self.image_found = True
                         self.last_location = (left, top, right, bottom)
                         self.current_template = template_path
-                        found = True
-                        found_template_name = f"surak{idx+1 if idx > 0 else ''}.png"
                         
-                        if not was_found:
-                            print(f"✓ [FOUND #{idx+1}] 이미지 발견: {template_path} at ({left}, {top}, {right}, {bottom}) 중심=({x}, {y})")
-                            print(f"→ 찾은 이미지: {found_template_name}")
-                            print(f"→ 즉시 클릭 후 시퀀스 시작")
+                        print(f"✓ [SURAK FOUND] {template_path} 발견 at ({left}, {top}, {right}, {bottom})")
+                        print(f"→ surak 사라질 때까지 0.5초마다 클릭 시작")
                         
-                        # 클릭 수행 (단일 클릭)
-                        pyautogui.moveTo(x, y, duration=0.1)
-                        pyautogui.click()
-                        
-                        self.image_clicked.emit(x, y)
-                        
-                        # 시퀀스가 아직 트리거되지 않았다면 즉시 시작
-                        if not self.sequence_triggered:
-                            print(f"[TRIGGER] surak 이미지 감지 → 즉시 시퀀스 시작")
-                            self.sequence_triggered = True
-                            self.release_completed.emit()
-                            self._start_sequence()
-                        
-                        break  # 첫 번째 매칭된 이미지만 처리
-                    else:
-                        # 부분 이미지는 무시
-                        if self.image_found and self.current_template == template_path:
-                            print(f"✗ [PARTIAL] 부분 이미지 감지 (무시): {template_path} ({left}, {top}, {right}, {bottom}) - 구역 밖으로 벗어남")
+                        # surak 클릭 단계로 전환
+                        self._start_surak_clicking()
+                        break
 
-            # 모든 템플릿에서 이미지를 찾지 못함
-            if not found:
-                if self.image_found:
-                    print(f"[RELEASE] 이미지 사라짐 확인 ({self.current_template})")
-                    self.image_found = False
-                    self.last_location = None
-                    self.current_template = None
-                    # 시퀀스는 이미 시작되었으므로 여기서는 아무것도 하지 않음
+            if not found and self.image_found:
+                print("[SURAK] 이미지 없음 (계속 검색 중...)")
 
         except Exception as e:
-            error_msg = f"이미지 검색 오류: {e}"
+            error_msg = f"surak 검색 오류: {e}"
             print(f"[ERROR] {error_msg}")
             self.error_occurred.emit(error_msg)
 
-    def _start_sequence(self):
-        """시퀀스 실행 시작"""
+    def _start_surak_clicking(self):
+        """surak 클릭 단계 시작"""
         if self.is_sequence_running:
             return
             
+        # 3초 타이머 중지
+        if self.click_timer:
+            self.click_timer.stop()
+            
         self.is_sequence_running = True
-        self.sequence_step_index = 0
+        self.sequence_phase = 1  # Phase 1: surak 클릭
+        
         print("\n" + "="*60)
-        print("시퀀스 시작: malon → hunt → filter → malon → 대기(3분) → malon → filter → malon")
+        print("시퀀스 시작: Phase 1 - surak 클릭")
         print("="*60 + "\n")
         self.sequence_started.emit()
         
-        # 시퀀스 타이머 시작
+        # 0.5초마다 실행되는 시퀀스 타이머
         self.sequence_timer = QTimer()
-        self.sequence_timer.timeout.connect(self._execute_sequence_step)
-        self.sequence_timer.start(100)  # 100ms마다 체크
+        self.sequence_timer.timeout.connect(self._execute_sequence)
+        self.sequence_timer.start(self.action_interval)
 
-    def _execute_sequence_step(self):
+    def _execute_sequence(self):
         """시퀀스 단계별 실행"""
         if not self.is_running or not self.is_sequence_running:
             if self.sequence_timer:
@@ -222,90 +196,278 @@ class ImageClickerWorker(QObject):
             return
 
         try:
-            # 시퀀스 정의: (이미지, 클릭타입, 대기시간)
-            # 클릭타입: "double" or "single"
-            # 대기시간: 다음 단계까지 대기 (초)
-            sequence_steps = [
-                ("img/malon.png", "double", 0.5),    # Step 1: malon 더블클릭
-                ("img/hunt.png", "single", 0.5),     # Step 2: hunt 클릭
-                ("img/filter.png", "single", 0.5),   # Step 3: filter 클릭
-                ("img/malon.png", "double", 180.0),  # Step 4: malon 더블클릭 → 3분 대기
-                ("img/malon.png", "double", 0.5),    # Step 5: malon 더블클릭
-                ("img/filter.png", "single", 0.5),   # Step 6: filter 클릭
-                ("img/malon.png", "double", 0.5),    # Step 7: malon 더블클릭
-            ]
-            
-            if self.sequence_step_index >= len(sequence_steps):
-                # 시퀀스 완료
-                print("\n" + "="*60)
-                print("시퀀스 완료!")
-                print("="*60 + "\n")
-                self.is_sequence_running = False
-                self.sequence_triggered = False  # 다음 감지를 위해 리셋
-                if self.sequence_timer:
-                    self.sequence_timer.stop()
-                    self.sequence_timer = None
-                self.sequence_completed.emit()
-                return
-            
-            # 대기 시간 처리
-            if self.sequence_wait_time > 0:
-                self.sequence_wait_time -= 0.1
-                if self.sequence_wait_time > 0:
-                    return  # 아직 대기 중
-                else:
-                    self.sequence_wait_time = 0
-                    self.sequence_step_index += 1
-                    if self.sequence_step_index >= len(sequence_steps):
-                        self._execute_sequence_step()  # 재귀 호출로 완료 처리
-                    return
-            
-            # 현재 단계 실행
-            image_path, click_type, wait_time = sequence_steps[self.sequence_step_index]
-            
-            step_name = f"Step {self.sequence_step_index + 1}/{len(sequence_steps)}"
-            print(f"\n[{step_name}] 실행 중: {image_path} ({click_type} click)")
-            
-            # 창인식 영역에서 이미지 찾기
-            result = self._find_and_click_in_window(image_path, click_type)
-            
-            if result:
-                x, y = result
-                print(f"[{step_name}] ✓ 성공: ({x}, {y}) 클릭 완료")
+            if self.sequence_phase == 1:
+                # Phase 1: surak 사라질 때까지 클릭
+                self._phase1_click_surak()
                 
-                # 다음 단계로 이동 준비
-                if wait_time > 1.0:
-                    print(f"[{step_name}] → {wait_time}초 대기 시작...")
-                    self.sequence_step.emit(f"{step_name}: {image_path} 클릭 완료, {wait_time}초 대기")
-                else:
-                    self.sequence_step.emit(f"{step_name}: {image_path} 클릭 완료")
+            elif self.sequence_phase == 2:
+                # Phase 2: hunt 보일 때까지 malon 더블클릭
+                self._phase2_malon_until_hunt()
                 
-                self.sequence_wait_time = wait_time
+            elif self.sequence_phase == 3:
+                # Phase 3: filter 보일 때까지 hunt 클릭
+                self._phase3_hunt_until_filter()
+                
+            elif self.sequence_phase == 4:
+                # Phase 4: 0.5초 대기 후 filter 클릭
+                self._phase4_wait_and_click_filter()
+                
+            elif self.sequence_phase == 5:
+                # Phase 5: filter 안 보일 때까지 malon 더블클릭
+                self._phase5_malon_until_filter_gone()
+                
+            elif self.sequence_phase == 6:
+                # Phase 6: 3분 대기
+                self._phase6_wait_3min()
+                
+            elif self.sequence_phase == 7:
+                # Phase 7: hunt 보일 때까지 malon 더블클릭
+                self._phase7_malon_until_hunt()
+                
+            elif self.sequence_phase == 8:
+                # Phase 8: filter 보일 때까지 hunt 클릭
+                self._phase8_hunt_until_filter()
+                
+            elif self.sequence_phase == 9:
+                # Phase 9: 0.5초 대기 후 filter 클릭
+                self._phase9_wait_and_click_filter()
+                
+            elif self.sequence_phase == 10:
+                # Phase 10: filter 안 보일 때까지 malon 더블클릭
+                self._phase10_malon_until_filter_gone()
+                
             else:
-                print(f"[{step_name}] ✗ 실패: {image_path} 이미지를 찾을 수 없음 (재시도 중...)")
-                # 실패 시 0.5초 후 재시도
-                self.sequence_wait_time = 0.5
-                
+                # 시퀀스 완료
+                self._complete_sequence()
+
         except Exception as e:
             error_msg = f"시퀀스 실행 오류: {e}"
             print(f"[ERROR] {error_msg}")
             self.error_occurred.emit(error_msg)
-            self.is_sequence_running = False
-            self.sequence_triggered = False
-            if self.sequence_timer:
-                self.sequence_timer.stop()
-                self.sequence_timer = None
+            self._complete_sequence()
 
-    def _find_and_click_in_window(self, image_path: str, click_type: str) -> Optional[Tuple[int, int]]:
-        """창인식 영역에서 이미지를 찾아 클릭"""
+    def _phase1_click_surak(self):
+        """Phase 1: surak 사라질 때까지 클릭"""
+        found = self._find_image_in_region("img/surak/surak.png", self.search_region) or \
+                self._find_image_in_region("img/surak/surak2.png", self.search_region) or \
+                self._find_image_in_region("img/surak/surak3.png", self.search_region)
+        
+        if found:
+            x, y = found
+            pyautogui.moveTo(x, y, duration=0.05)
+            pyautogui.click()
+            print(f"[Phase 1] surak 클릭: ({x}, {y})")
+            self.image_clicked.emit(x, y)
+        else:
+            print("[Phase 1] surak 사라짐 → Phase 2로 전환")
+            self.sequence_phase = 2
+            self.sequence_step.emit("Phase 1 완료: surak 사라짐")
+
+    def _phase2_malon_until_hunt(self):
+        """Phase 2: hunt 보일 때까지 malon 더블클릭"""
+        hunt_found = self._find_image_in_region("img/hunt.png", self.window_region)
+        
+        if hunt_found:
+            print("[Phase 2] hunt 발견 → Phase 3로 전환")
+            self.sequence_phase = 3
+            self.sequence_step.emit("Phase 2 완료: hunt 발견")
+        else:
+            malon_found = self._find_image_in_region("img/malon.png", self.window_region)
+            if malon_found:
+                x, y = malon_found
+                pyautogui.moveTo(x, y, duration=0.05)
+                pyautogui.doubleClick()
+                print(f"[Phase 2] malon 더블클릭: ({x}, {y})")
+                self.image_clicked.emit(x, y)
+
+    def _phase3_hunt_until_filter(self):
+        """Phase 3: filter 보일 때까지 hunt 클릭"""
+        filter_found = self._find_image_in_region("img/filter.png", self.window_region)
+        
+        if filter_found:
+            print("[Phase 3] filter 발견 → Phase 4로 전환")
+            self.sequence_phase = 4
+            self.wait_counter = 0
+            self.sequence_step.emit("Phase 3 완료: filter 발견")
+        else:
+            hunt_found = self._find_image_in_region("img/hunt.png", self.window_region)
+            if hunt_found:
+                x, y = hunt_found
+                pyautogui.moveTo(x, y, duration=0.05)
+                pyautogui.click()
+                print(f"[Phase 3] hunt 클릭: ({x}, {y})")
+                self.image_clicked.emit(x, y)
+
+    def _phase4_wait_and_click_filter(self):
+        """Phase 4: 0.5초 대기 후 filter 클릭"""
+        if self.wait_counter == 0:
+            print("[Phase 4] 0.5초 대기 중...")
+            self.wait_counter = 1
+        else:
+            filter_found = self._find_image_in_region("img/filter.png", self.window_region)
+            if filter_found:
+                x, y = filter_found
+                pyautogui.moveTo(x, y, duration=0.05)
+                pyautogui.click()
+                print(f"[Phase 4] filter 클릭: ({x}, {y})")
+                self.image_clicked.emit(x, y)
+                self.sequence_phase = 5
+                self.sequence_step.emit("Phase 4 완료: filter 클릭")
+            else:
+                print("[Phase 4] filter 없음, Phase 5로 전환")
+                self.sequence_phase = 5
+
+    def _phase5_malon_until_filter_gone(self):
+        """Phase 5: filter 안 보일 때까지 malon 더블클릭"""
+        filter_found = self._find_image_in_region("img/filter.png", self.window_region)
+        
+        if not filter_found:
+            print("[Phase 5] filter 사라짐 → Phase 6 (3분 대기)로 전환")
+            self.sequence_phase = 6
+            self.wait_counter = 0
+            self.phase6_start_time = time.time()
+            self.sequence_step.emit("Phase 5 완료: filter 사라짐, 3분 대기 시작")
+            
+            # Phase 5 완료 시그널 발송 (텔레그램 알림용)
+            self.phase5_completed.emit()
+            
+            # Phase 6 시작 시그널 (UI 업데이트용)
+            self.phase6_progress.emit(0, 180)
+        else:
+            malon_found = self._find_image_in_region("img/malon.png", self.window_region)
+            if malon_found:
+                x, y = malon_found
+                pyautogui.moveTo(x, y, duration=0.05)
+                pyautogui.doubleClick()
+                print(f"[Phase 5] malon 더블클릭: ({x}, {y})")
+                self.image_clicked.emit(x, y)
+
+    def _phase6_wait_3min(self):
+        """Phase 6: 3분(180초) 대기"""
+        total_seconds = 180
+        
+        if self.wait_counter == 0:
+            print("[Phase 6] 3분(180초) 대기 시작...")
+            self.wait_counter = 1
+            self.phase6_start_time = time.time()
+        
+        elapsed = int(time.time() - self.phase6_start_time)
+        
+        # UI에 진행 상황 전송
+        self.phase6_progress.emit(elapsed, total_seconds)
+        
+        if elapsed >= total_seconds:  # 3분
+            print("[Phase 6] 3분 대기 완료 → Phase 7로 전환")
+            self.sequence_phase = 7
+            self.wait_counter = 0
+            self.sequence_step.emit("Phase 6 완료: 3분 대기 완료")
+            # 마지막 진행 상황 전송 (0초 남음)
+            self.phase6_progress.emit(total_seconds, total_seconds)
+        elif elapsed % 30 == 0 and elapsed > 0:  # 30초마다 로그 (0초 제외)
+            remaining = total_seconds - elapsed
+            print(f"[Phase 6] 대기 중... ({elapsed}초 경과 / {remaining}초 남음)")
+
+    def _phase7_malon_until_hunt(self):
+        """Phase 7: hunt 보일 때까지 malon 더블클릭"""
+        hunt_found = self._find_image_in_region("img/hunt.png", self.window_region)
+        
+        if hunt_found:
+            print("[Phase 7] hunt 발견 → Phase 8로 전환")
+            self.sequence_phase = 8
+            self.sequence_step.emit("Phase 7 완료: hunt 발견")
+        else:
+            malon_found = self._find_image_in_region("img/malon.png", self.window_region)
+            if malon_found:
+                x, y = malon_found
+                pyautogui.moveTo(x, y, duration=0.05)
+                pyautogui.doubleClick()
+                print(f"[Phase 7] malon 더블클릭: ({x}, {y})")
+                self.image_clicked.emit(x, y)
+
+    def _phase8_hunt_until_filter(self):
+        """Phase 8: filter 보일 때까지 hunt 클릭"""
+        filter_found = self._find_image_in_region("img/filter.png", self.window_region)
+        
+        if filter_found:
+            print("[Phase 8] filter 발견 → Phase 9로 전환")
+            self.sequence_phase = 9
+            self.wait_counter = 0
+            self.sequence_step.emit("Phase 8 완료: filter 발견")
+        else:
+            hunt_found = self._find_image_in_region("img/hunt.png", self.window_region)
+            if hunt_found:
+                x, y = hunt_found
+                pyautogui.moveTo(x, y, duration=0.05)
+                pyautogui.click()
+                print(f"[Phase 8] hunt 클릭: ({x}, {y})")
+                self.image_clicked.emit(x, y)
+
+    def _phase9_wait_and_click_filter(self):
+        """Phase 9: 0.5초 대기 후 filter 클릭"""
+        if self.wait_counter == 0:
+            print("[Phase 9] 0.5초 대기 중...")
+            self.wait_counter = 1
+        else:
+            filter_found = self._find_image_in_region("img/filter.png", self.window_region)
+            if filter_found:
+                x, y = filter_found
+                pyautogui.moveTo(x, y, duration=0.05)
+                pyautogui.click()
+                print(f"[Phase 9] filter 클릭: ({x}, {y})")
+                self.image_clicked.emit(x, y)
+                self.sequence_phase = 10
+                self.sequence_step.emit("Phase 9 완료: filter 클릭")
+            else:
+                print("[Phase 9] filter 없음, Phase 10으로 전환")
+                self.sequence_phase = 10
+
+    def _phase10_malon_until_filter_gone(self):
+        """Phase 10: filter 안 보일 때까지 malon 더블클릭"""
+        filter_found = self._find_image_in_region("img/filter.png", self.window_region)
+        
+        if not filter_found:
+            print("[Phase 10] filter 사라짐 → 시퀀스 완료")
+            self.sequence_phase = 11  # 완료 단계
+            self.sequence_step.emit("Phase 10 완료: filter 사라짐")
+        else:
+            malon_found = self._find_image_in_region("img/malon.png", self.window_region)
+            if malon_found:
+                x, y = malon_found
+                pyautogui.moveTo(x, y, duration=0.05)
+                pyautogui.doubleClick()
+                print(f"[Phase 10] malon 더블클릭: ({x}, {y})")
+                self.image_clicked.emit(x, y)
+
+    def _complete_sequence(self):
+        """시퀀스 완료"""
+        print("\n" + "="*60)
+        print("시퀀스 완료!")
+        print("="*60 + "\n")
+        
+        self.is_sequence_running = False
+        self.sequence_phase = 0
+        self.wait_counter = 0
+        self.phase6_start_time = 0
+        
+        if self.sequence_timer:
+            self.sequence_timer.stop()
+            self.sequence_timer = None
+            
+        # 3초 타이머 재시작
+        if self.click_timer:
+            self.click_timer.start(self.click_interval)
+            
+        self.sequence_completed.emit()
+
+    def _find_image_in_region(self, image_path: str, region: Tuple[int, int, int, int]) -> Optional[Tuple[int, int]]:
+        """특정 영역에서 이미지를 찾아 중심 좌표 반환"""
         try:
-            x1, y1, x2, y2 = self.window_region
+            x1, y1, x2, y2 = region
             region_width = x2 - x1
             region_height = y2 - y1
             
             template_full_path = resource_path(image_path)
             
-            # pyautogui로 이미지 찾기
             location = pyautogui.locateOnScreen(
                 template_full_path,
                 confidence=self.confidence,
@@ -319,27 +481,15 @@ class ImageClickerWorker(QObject):
                 
                 # 전체 이미지가 구역 내에 있는지 확인
                 if left >= x1 and top >= y1 and right <= x2 and bottom <= y2:
-                    # 중심점 계산
                     x = left + width // 2
                     y = top + height // 2
-                    
-                    # 클릭 수행
-                    pyautogui.moveTo(x, y, duration=0.1)
-                    
-                    if click_type == "double":
-                        pyautogui.doubleClick()
-                    else:
-                        pyautogui.click()
-                    
                     return (x, y)
             
             return None
             
         except Exception as e:
-            print(f"이미지 찾기 오류: {e}")
             return None
 
     def on_image_release_completed(self):
         """외부에서 호출 가능한 릴리즈 완료 핸들러"""
-        if not self.is_sequence_running and not self.sequence_triggered:
-            self._start_sequence()
+        pass

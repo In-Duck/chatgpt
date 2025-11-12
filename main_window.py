@@ -2,7 +2,7 @@ import time
 import win32gui
 import win32con
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QLabel, QPushButton, QTextEdit, QMessageBox)
+                             QLabel, QPushButton, QTextEdit, QMessageBox, QProgressBar)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon, QFont
 from settings_dialog import SettingsDialog
@@ -15,6 +15,7 @@ from buff_worker import BuffWorker
 from hotkey_manager import HotkeyManager
 from system_tray import SystemTrayManager
 from image_detector import ImageDetector
+from utils import resource_path
 
 class MainWindow(QMainWindow):
     """메인 윈도우"""
@@ -59,17 +60,29 @@ class MainWindow(QMainWindow):
             3: (0.0, 0.0),
         }
         self.buff_last_run = {1: None, 2: None, 3: None}
+        
+        # Phase 6 쿨타임 UI 요소
+        self.phase6_progress_bar = None
+        self.phase6_time_label = None
 
         self.init_ui()
         self.setup_connections()
         self.apply_config()
         self.setup_hotkeys()
         self.setup_system_tray()
+        
+        # 창 위치 복원
+        self.restore_window_position()
 
     def init_ui(self):
         """UI 초기화"""
-        self.setWindowTitle("창 모니터링 & 자동화")
-        self.setFixedSize(340, 640)
+        # 창 제목과 아이콘 설정
+        self.setWindowTitle("instargram")
+        icon_path = resource_path("instargram.ico")
+        self.setWindowIcon(QIcon(icon_path))
+        
+        # 창 크기 설정 (타이틀바 유지, 내부 타이틀 라벨만 제거하므로 높이 조정)
+        self.setFixedSize(340, 610)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -77,15 +90,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.setSpacing(6)
         layout.setContentsMargins(10, 10, 10, 10)
-
-        # 타이틀
-        title = QLabel("창 모니터링 & 자동화")
-        title_font = QFont()
-        title_font.setPointSize(12)
-        title_font.setBold(True)
-        title.setFont(title_font)
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
 
         # 핫키 안내
         self.hotkey_info_label = QLabel()
@@ -107,6 +111,41 @@ class MainWindow(QMainWindow):
         self.status_label.setWordWrap(True)
         self.status_label.setMaximumHeight(50)
         layout.addWidget(self.status_label)
+        
+        # Phase 6 쿨타임 표시 영역 (초기에는 숨김)
+        phase6_widget = QWidget()
+        phase6_layout = QVBoxLayout()
+        phase6_layout.setContentsMargins(0, 0, 0, 0)
+        phase6_layout.setSpacing(4)
+        
+        self.phase6_time_label = QLabel("리치 쿨타임: 0초 / 180초")
+        self.phase6_time_label.setAlignment(Qt.AlignCenter)
+        self.phase6_time_label.setStyleSheet("color: #FF5722; font-size: 9pt; font-weight: bold;")
+        phase6_layout.addWidget(self.phase6_time_label)
+        
+        self.phase6_progress_bar = QProgressBar()
+        self.phase6_progress_bar.setMinimum(0)
+        self.phase6_progress_bar.setMaximum(180)
+        self.phase6_progress_bar.setValue(0)
+        self.phase6_progress_bar.setTextVisible(False)
+        self.phase6_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #ddd;
+                border-radius: 5px;
+                background-color: #f0f0f0;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #FF5722;
+                border-radius: 3px;
+            }
+        """)
+        phase6_layout.addWidget(self.phase6_progress_bar)
+        
+        phase6_widget.setLayout(phase6_layout)
+        phase6_widget.setVisible(False)  # 초기에는 숨김
+        self.phase6_widget = phase6_widget
+        layout.addWidget(phase6_widget)
 
         # 버튼 영역
         button_layout = QVBoxLayout()
@@ -445,6 +484,22 @@ class MainWindow(QMainWindow):
 
         self.update_status()
         self.update_buff_info_labels()
+        
+    def restore_window_position(self):
+        """저장된 창 위치 복원"""
+        if "window_x" in self.config and "window_y" in self.config:
+            x = self.config["window_x"]
+            y = self.config["window_y"]
+            self.move(x, y)
+            print(f"창 위치 복원: ({x}, {y})")
+        
+    def save_window_position(self):
+        """현재 창 위치 저장"""
+        pos = self.pos()
+        self.config["window_x"] = pos.x()
+        self.config["window_y"] = pos.y()
+        self.config_manager.save_config(self.config)
+        print(f"창 위치 저장: ({pos.x()}, {pos.y()})")
 
     def align_selected_window(self):
         """선택된 창을 지정된 위치와 크기로 정렬 (NEW)"""
@@ -498,9 +553,31 @@ class MainWindow(QMainWindow):
         self.image_clicker_worker.sequence_started.connect(self.on_sequence_started)
         self.image_clicker_worker.sequence_completed.connect(self.on_sequence_completed)
         self.image_clicker_worker.sequence_step.connect(self.on_sequence_step)
+        
+        # Phase 6 진행 상황 시그널 연결
+        self.image_clicker_worker.phase6_progress.connect(self.on_phase6_progress)
 
         # 이미지 감지기 시그널 연결
         self.image_detector.image_detected.connect(self.on_image_detected)
+        
+    def on_phase6_progress(self, elapsed: int, total: int):
+        """Phase 6 (3분 대기) 진행 상황 업데이트"""
+        if elapsed == 0:
+            # Phase 6 시작
+            self.phase6_widget.setVisible(True)
+            self.phase6_progress_bar.setValue(0)
+            self.phase6_time_label.setText(f"리치 쿨타임: 0초 / {total}초")
+        elif elapsed >= total:
+            # Phase 6 완료
+            self.phase6_progress_bar.setValue(total)
+            self.phase6_time_label.setText(f"리치 쿨타임: {total}초 / {total}초 (완료)")
+            # 2초 후 숨김
+            QTimer.singleShot(2000, lambda: self.phase6_widget.setVisible(False))
+        else:
+            # 진행 중
+            remaining = total - elapsed
+            self.phase6_progress_bar.setValue(elapsed)
+            self.phase6_time_label.setText(f"리치 쿨타임: {elapsed}초 / {total}초 (남은 시간: {remaining}초)")
 
     def on_image_detected(self, message: str):
         """이미지 감지 시 호출"""
@@ -721,11 +798,17 @@ class MainWindow(QMainWindow):
         # 거탐 이미지 감지 설정 - 고정 구역 (30, 52, 1305, 595)
         gt_region = (30, 52, 1305, 595)
         gt_images = [
-            "img/gt1.png", "img/gt2.png", "img/gt3.png", "img/gt4.png",
-            "img/gt5.png", "img/gt6.png", "img/gt7.png", "img/gt8.png",
-            "img/gt9.png", "img/gt10.png", "img/gt11.png", "img/gt12.png",
-            "img/gt13.png", "img/gt14.png", "img/gt15.png", "img/gt16.png",
-            "img/gt17.png", "img/gt18.png", "img/gt19.png", "img/gt20.png"
+            "img/gt/gt1.png", "img/gt/gt2.png", "img/gt/gt3.png", "img/gt/gt4.png",
+            "img/gt/gt5.png", "img/gt/gt6.png", "img/gt/gt7.png", "img/gt/gt8.png",
+            "img/gt/gt9.png", "img/gt/gt10.png", "img/gt/gt11.png", "img/gt/gt12.png",
+            "img/gt/gt13.png", "img/gt/gt14.png", "img/gt/gt15.png", "img/gt/gt16.png",
+            "img/gt/gt17.png", "img/gt/gt18.png", "img/gt/gt19.png", "img/gt/gt20.png",
+            "img/gt/gt22.png", "img/gt/gt23.png", "img/gt/gt24.png", "img/gt/gt25.png",
+            "img/gt/gt26.png", "img/gt/gt27.png", "img/gt/gt28.png", "img/gt/gt29.png",
+            "img/gt/gt30.png", "img/gt/gt31.png", "img/gt/gt32.png", "img/gt/gt33.png",
+            "img/gt/gt34.png", "img/gt/gt35.png", "img/gt/gt36.png", "img/gt/gt37.png",
+            "img/gt/gt38.png", "img/gt/gt39.png", "img/gt/gt40.png", "img/gt/gt41.png",
+            "img/gt/gt42.png", "img/gt/gt43.png", "img/gt/gt45.png", "img/gt/gt46.png"
         ]
 
         if self.config.get("telegram_token") and self.config.get("telegram_chat_id"):
@@ -740,7 +823,7 @@ class MainWindow(QMainWindow):
 
         # 리치 자동클릭 설정 - 3개의 surak 이미지 모두 사용
         reach_region = tuple(self.config.get("image_click_region", [665, 420, 1236, 753]))
-        reach_templates = ["img/surak.png", "img/surak2.png", "img/surak3.png"]
+        reach_templates = ["img/surak/surak.png", "img/surak/surak2.png", "img/surak/surak3.png"]
         reach_confidence = self.config.get("image_click_confidence", 0.8)
         
         print(f"[설정] 리치 자동클릭: 구역={reach_region}, 템플릿={reach_templates}, 신뢰도={reach_confidence}")
@@ -1208,6 +1291,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """창 닫기 이벤트"""
+        # 창 위치 저장
+        self.save_window_position()
+        
         # 모든 워커 중지
         if self.is_monitoring:
             self.window_monitor.stop_monitoring()

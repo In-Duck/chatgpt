@@ -617,6 +617,17 @@ class SettingsDialog(QDialog):
         image_click_hotkey_row.addWidget(clear_image_click_btn)
         hotkey_layout.addLayout(image_click_hotkey_row)
 
+        # 거탐감지 핫키
+        image_detect_hotkey_row = QHBoxLayout()
+        image_detect_hotkey_row.addWidget(QLabel("거탐감지:"))
+        self.image_detect_hotkey_input = HotkeyInputWidget()
+        image_detect_hotkey_row.addWidget(self.image_detect_hotkey_input)
+        clear_image_detect_btn = QPushButton("초기화")
+        clear_image_detect_btn.setMaximumWidth(60)
+        clear_image_detect_btn.clicked.connect(self.image_detect_hotkey_input.clear_hotkey)
+        image_detect_hotkey_row.addWidget(clear_image_detect_btn)
+        hotkey_layout.addLayout(image_detect_hotkey_row)
+
         hotkey_layout.addStretch()
 
         hotkey_tab.setLayout(hotkey_layout)
@@ -809,6 +820,10 @@ class SettingsDialog(QDialog):
         if self.image_click_hotkey_input.get_hotkey():
             if self.image_click_hotkey_input.get_hotkey() in hotkeys.values():
                 errors.append("핫키 중복: 리치 핫키가 다른 기능과 중복됩니다.")
+            hotkeys['리치'] = self.image_click_hotkey_input.get_hotkey()
+        if self.image_detect_hotkey_input.get_hotkey():
+            if self.image_detect_hotkey_input.get_hotkey() in hotkeys.values():
+                errors.append("핫키 중복: 거탐감지 핫키가 다른 기능과 중복됩니다.")
 
         # 오류가 있으면 경고 메시지 표시
         if errors:
@@ -948,6 +963,9 @@ class SettingsDialog(QDialog):
         if "hotkey_image_click" in self.current_config:
             self.image_click_hotkey_input.set_hotkey(self.current_config["hotkey_image_click"])
 
+        if "hotkey_image_detect" in self.current_config:
+            self.image_detect_hotkey_input.set_hotkey(self.current_config["hotkey_image_detect"])
+
     def show_region_preview(self):
         """구역 미리보기를 표시합니다."""
         region = (
@@ -1037,7 +1055,8 @@ class SettingsDialog(QDialog):
             "hotkey_buff": self.buff_hotkey_input.get_hotkey(),
             "hotkey_monitor": self.monitor_hotkey_input.get_hotkey(),
             "hotkey_detector": self.detector_hotkey_input.get_hotkey(),
-            "hotkey_image_click": self.image_click_hotkey_input.get_hotkey()
+            "hotkey_image_click": self.image_click_hotkey_input.get_hotkey(),
+            "hotkey_image_detect": self.image_detect_hotkey_input.get_hotkey()
         }
 
     def closeEvent(self, event):

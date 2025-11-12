@@ -1,5 +1,8 @@
 {
-    "selected_window": null,
+    "selected_window": {
+        "hwnd": 24381784,
+        "title": "MapleStory Worlds-Mapleland (빅토리아)"
+    },
     "key_to_press": "z",
     "min_interval": 1.0,
     "max_interval": 3.0,
@@ -30,20 +33,23 @@
     "hotkey_monitor": "",
     "hotkey_detector": "",
     "image_click_region": [
-        790,
-        498,
-        938,
-        541
+        536,
+        425,
+        1002,
+        578
     ],
     "image_click_template": "surak.png",
-    "image_click_confidence": 0.7,
+    "image_click_confidence": 0.5,
     "hotkey_image_click": "",
+    "hotkey_image_detect": "",
     "geotam_alert_interval": 1,
     "periodic_interval_minutes": 1,
     "false_detection_region": [
-        32,
-        54,
-        1301,
-        671
-    ]
+        456,
+        313,
+        1003,
+        584
+    ],
+    "window_x": 1421,
+    "window_y": 147
 }
